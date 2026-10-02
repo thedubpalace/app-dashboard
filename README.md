@@ -33,3 +33,11 @@ python -m unittest discover -s tests
 Shell launch, Codex/Claude session control, Docker Desktop repair, machine
 restart, and Tailscale mutation return `501` until each has a dedicated exact
 adapter. Their read-only status views remain available.
+
+## Local service deployment
+
+The dashboard runs as the limited-user Scheduled Task `Veda Dashboard` and
+listens only on `127.0.0.1:8765`. The task loads ignored `.env.runtime`; its
+machine credentials match Temporal and its session secret is independent.
+`settings.json` and `.codex/` remain user-owned and deployment does not replace
+them. Task Scheduler restarts the service after failure or logon.
