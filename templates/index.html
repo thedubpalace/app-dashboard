@@ -477,6 +477,15 @@
     .btn-modal.primary { background: rgba(10,132,255,0.24); border-color: rgba(10,132,255,0.5); color: #cfe6ff; }
     .btn-modal.primary:hover { background: rgba(10,132,255,0.36); }
     .btn-modal:active { transform: scale(0.96); }
+    .auth-gate { position:fixed; inset:0; z-index:1000; display:grid; place-items:center; padding:20px; background:rgba(2,8,17,.74); backdrop-filter:blur(22px); }
+    .auth-card { width:min(380px,100%); padding:24px; border:1px solid var(--glass-border); border-radius:var(--radius-panel); background:var(--glass-fill); box-shadow:var(--shadow-panel); }
+    .auth-card h2 { margin:0 0 6px; font-size:22px; }.auth-card p { color:var(--label-secondary); margin:0 0 18px; font-size:13px; }
+    .auth-card .modal-input { width:100%; margin:5px 0; }.auth-card .btn-modal { width:100%; margin-top:12px; }
+    .workflow-list { display:grid; gap:8px; padding:0 12px 12px; }
+    .workflow-item { display:grid; grid-template-columns:9px 1fr auto; gap:10px; align-items:center; padding:10px 12px; border-radius:12px; background:rgba(0,0,0,.16); }
+    .workflow-item strong { font-size:12px; }.workflow-meta { color:var(--label-secondary); font:10px var(--font-mono); margin-top:2px; }
+    .workflow-state { font-size:10px; font-weight:700; text-transform:uppercase; color:var(--label-secondary); }.workflow-state.running,.workflow-state.retrying { color:var(--sys-orange); }.workflow-state.succeeded { color:var(--sys-green); }.workflow-state.failed,.workflow-state.rollback-failed { color:var(--sys-red); }
+    .hidden { display:none !important; }
 
     @media (max-width: 620px) {
       .wrap { padding: 0 12px 32px; }
@@ -498,6 +507,15 @@
   </style>
 </head>
 <body>
+
+  <div id="authGate" class="auth-gate hidden">
+    <form class="auth-card" onsubmit="loginDashboard(event)">
+      <h2>Veda Control</h2><p>Sign in to queue allowlisted lifecycle workflows.</p>
+      <input id="loginUser" class="modal-input" autocomplete="username" placeholder="Username" value="admin" />
+      <input id="loginPassword" class="modal-input" type="password" autocomplete="current-password" placeholder="Password" />
+      <button class="btn-modal primary" type="submit">Sign in</button>
+    </form>
+  </div>
 
   <!-- Toasts -->
   <div id="toasts"></div>
@@ -602,9 +620,38 @@
       <div class="rows" id="vmwareBody"></div>
     </section>
 
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title"><span class="section-icon" style="background:rgba(255,159,10,.2);color:var(--sys-orange);">↻</span><h2>Workflow Activity</h2></div><span class="badge-count" id="controlState">Checking</span></div>
+      <div id="workflowBody" class="workflow-list"><div class="workflow-meta">No lifecycle requests yet.</div></div>
+    </section>
+
   </div>
 
   <script>
+    let csrfToken = "";
+    const intentKeys = new Map();
+    function hasCapability(item, operation) { return (item.capabilities || []).some(c => c.operation === operation && c.allowed); }
+    function controlHint(item) { return item.observationError || item.unsupportedReason || (item.classification && item.classification !== "managed" ? `${item.classification}: lifecycle actions disabled` : item.controlStatus === "Unavailable" ? "Adapter dependency unavailable" : ""); }
+    function mutationHeaders(body, intent) {
+      const compact = intent.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 48);
+      const key = intentKeys.get(intent) || `intent_${compact}_${crypto.randomUUID().replaceAll("-", "")}`;
+      intentKeys.set(intent, key);
+      const headers = { "X-CSRF-Token": csrfToken, "Idempotency-Key": key };
+      if (body) headers["Content-Type"] = "application/json";
+      return headers;
+    }
+    async function loginDashboard(event) {
+      event.preventDefault();
+      const res = await fetch("/api/login", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ username:loginUser.value, password:loginPassword.value }) });
+      const data = await res.json();
+      if (!res.ok) return toast(data.error || "Sign in failed", false);
+      csrfToken = data.csrfToken; document.getElementById("authGate").classList.add("hidden"); refreshAll(); loadWorkflows();
+    }
+    async function ensureSession() {
+      const data = await fetch("/api/session").then(r => r.json()).catch(() => ({}));
+      if (data.authenticated) csrfToken = data.csrfToken || "";
+      else document.getElementById("authGate").classList.remove("hidden");
+    }
     // ---------- helpers ----------
     function el(tag, cls, html) {
       const e = document.createElement(tag);
@@ -670,21 +717,26 @@
 
     // action() — pendingLabel keeps button in "Restarting…" state during postDelay
     async function action(b, url, body, postDelay = 600, silentRefresh = false, pendingLabel = null) {
+      const verb = (url.split("/").pop() || "action").replace("mode", "switch mode");
+      if (["stop", "restart", "mode"].some(x => url.endsWith("/" + x)) && !confirm(`Queue ${verb} through Temporal?`)) return;
       const all = b.parentElement.querySelectorAll("button");
       all.forEach((x) => { x.disabled = true; });
       const original = b.innerHTML;
       b.innerHTML = '<svg class="spinner" width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="14 8" stroke-linecap="round"/></svg>';
       try {
-        const opts = { method: "POST" };
+        const intent = `${url}:${JSON.stringify(body || {})}`;
+        const opts = { method: "POST", headers: mutationHeaders(body, intent) };
         if (body) {
-          opts.headers = { "Content-Type": "application/json" };
           opts.body = JSON.stringify(body);
         }
         const res = await fetch(url, opts);
         let data = {};
         try { data = await res.json(); } catch (_) {}
         const ok = res.ok && data.ok !== false;
-        toast(data.message || data.error || (ok ? "Done" : "Failed"), ok);
+        if (ok && res.status === 202) {
+          toast(data.duplicate ? "Already queued — showing the same workflow" : "Queued in Temporal", true);
+          loadWorkflows();
+        } else toast(data.message || data.error || (ok ? "Done" : "Failed"), ok);
       } catch (e) {
         toast(e.message || "Request failed", false);
       } finally {
@@ -909,6 +961,7 @@
       const cells = [leadLine(displayName || a.name, running, mon, a.url)];
       if (a.url) cells.push(monoLine(a.url, true));
       if (a.description) cells.push(descLine(a.description));
+      if (controlHint(a)) cells.push(descLine(controlHint(a)));
       const devCmd = a.devCmd || a.runCmd;
       if (a.mode === "docker" && a.containerName) cells.push(monoLine(`docker  ${a.containerName}`));
       else if (devCmd) cells.push(monoLine(devCmd));
@@ -916,15 +969,15 @@
       if (n > 0) cells.push(monoLine(`claude  ×${n}`, false));
       if (codexSessions > 0) cells.push(monoLine(`codex  ×${codexSessions}`, false));
       const btns = [];
-      if (a.supportsModes) btns.push(modeSeg(a));
-      if (a.runCmd) {
-        btns.push(running
-          ? btn("Stop",    "stop",  (b) => action(b, `/api/apps/${enc}/stop`))
-          : btn("Start",   "start", (b) => action(b, `/api/apps/${enc}/start`)));
-        btns.push(btn("Restart", "restart", (b) => action(b, `/api/apps/${enc}/restart`, undefined, 5000, true, "Restarting…")));
+      if (hasCapability(a, "switch-mode")) btns.push(modeSeg(a));
+      if (a.resourceId) {
+        if (running && hasCapability(a, "stop")) btns.push(btn("Stop", "stop", (b) => action(b, `/api/apps/${enc}/stop`)));
+        if (!running && hasCapability(a, "start")) btns.push(btn("Start", "start", (b) => action(b, `/api/apps/${enc}/start`)));
+        if (hasCapability(a, "restart")) btns.push(btn("Restart", "restart", (b) => action(b, `/api/apps/${enc}/restart`, undefined, 5000, true, "Queued…")));
       }
       if (a.localPath) {
         const openClaude = btn("Claude", "shell", (b) => action(b, `/api/apps/${enc}/shell`));
+        openClaude.disabled = true; openClaude.title = "Disabled until a dedicated adapter exists";
         if (n > 0) {
           const endClaude = btn(`End ×${n}`, "stop", (b) => action(b, `/api/apps/${enc}/claude-sessions/kill-all`));
           btns.push(btnGroup("Claude controls", [openClaude, endClaude]));
@@ -932,6 +985,7 @@
           btns.push(openClaude);
         }
         const openCodex = btn("Codex", "shell", (b) => action(b, `/api/apps/${enc}/codex`));
+        openCodex.disabled = true; openCodex.title = "Disabled until a dedicated adapter exists";
         if (codexSessions > 0) {
           const endCodex = btn(`End ×${codexSessions}`, "stop", (b) => action(b, `/api/apps/${enc}/codex-sessions/kill-all`));
           btns.push(btnGroup("Codex controls", [openCodex, endCodex]));
@@ -971,7 +1025,7 @@
       try {
         const res = await fetch(`/api/apps/${enc}/mode`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: mutationHeaders({ mode }, `mode:${enc}:${mode}`),
           body: JSON.stringify({ mode }),
         });
         let data = {};
@@ -1074,11 +1128,12 @@
           cells.push(monoLine(c.statusText));
         }
         if (c.imageCreated) cells.push(monoLine(fmtImageDate(c.imageCreated)));
+        if (controlHint(c)) cells.push(descLine(controlHint(c)));
         const enc = encodeURIComponent(c.name);
-        const btns = [running
-          ? btn("Stop",  "stop",  (b) => action(b, `/api/docker/${enc}/stop`))
-          : btn("Start", "start", (b) => action(b, `/api/docker/${enc}/start`))];
-        if (running) {
+        const btns = [];
+        if (running && hasCapability(c, "stop")) btns.push(btn("Stop", "stop", (b) => action(b, `/api/docker/${enc}/stop`)));
+        if (!running && hasCapability(c, "start")) btns.push(btn("Start", "start", (b) => action(b, `/api/docker/${enc}/start`)));
+        if (running && hasCapability(c, "restart")) {
           btns.push(btn("Restart", "restart", (b) => action(b, `/api/docker/${enc}/restart`, undefined, 3000, true, "Restarting…")));
         }
         body.appendChild(row(cells, btns, "ctr:" + c.name));
@@ -1147,7 +1202,7 @@
       try {
         const res = await fetch("/api/settings/docker/filter", {
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
           body: JSON.stringify({ filter: _filterTags }),
         });
         const data = await res.json();
@@ -1182,23 +1237,40 @@
         if (vm.vmx) cells.push(monoLine(vm.vmx.split(/[\\/]/).pop()));
         if (!running && vm.desiredRunning) cells.push(descLine("Auto-recovery enabled"));
         if (vm.health) cells.push(healthLine(vm.health));
-        const toggleBtn = running
-          ? btn("Stop",  "stop",  (b) => action(b, "/api/vmware/stop",  { vmx: vm.vmx, force: false }))
-          : btn("Start", "start", (b) => action(b, "/api/vmware/start", { vmx: vm.vmx, gui: false }));
-        body.appendChild(row(cells, [toggleBtn], "vm:" + vm.name));
+        if (controlHint(vm)) cells.push(descLine(controlHint(vm)));
+        const buttons = [];
+        if (running && hasCapability(vm, "stop")) buttons.push(btn("Stop", "stop", (b) => action(b, "/api/vmware/stop", { vmx: vm.vmx })));
+        if (!running && hasCapability(vm, "start")) buttons.push(btn("Start", "start", (b) => action(b, "/api/vmware/start", { vmx: vm.vmx })));
+        if (hasCapability(vm, "restart")) buttons.push(btn("Restart", "restart", (b) => action(b, "/api/vmware/restart", { vmx: vm.vmx })));
+        body.appendChild(row(cells, buttons, "vm:" + vm.name));
       });
     }
 
     // ---------- restart machine ----------
     async function restartMachine() {
-      if (!confirm("Restart this machine?\n\nAll running services will stop. The machine will reboot in 10 seconds.")) return;
+      toast("Machine restart is disabled until a dedicated adapter exists", false);
+    }
+
+    async function loadWorkflows() {
+      const body = document.getElementById("workflowBody");
+      const state = document.getElementById("controlState");
       try {
-        const r = await fetch("/api/system/restart", { method: "POST" });
-        const d = await r.json();
-        toast(d.message || d.error || (r.ok ? "Restarting…" : "Failed"), r.ok);
-      } catch (e) {
-        toast(e.message || "Request failed", false);
-      }
+        const [workflowRes, readyRes, historyRes] = await Promise.all([fetch("/api/workflows"), fetch("/api/control/readiness"), fetch("/api/history")]);
+        const data = await workflowRes.json(), ready = await readyRes.json(), history = await historyRes.json();
+        state.textContent = ready.status || (ready.ok ? "Ready" : "Unavailable");
+        const list = (data.workflows || []).slice().sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 8);
+        body.innerHTML = "";
+        if (!list.length) { body.innerHTML = '<div class="workflow-meta">No lifecycle requests yet.</div>'; return; }
+        list.forEach(w => {
+          const item = el("div", "workflow-item");
+          const dot = el("span", "status-dot " + (w.status === "Succeeded" ? "is-on" : ""));
+          const detail = el("div", "", `<strong>${esc(w.operation)} · ${esc(w.resourceId)}</strong><div class="workflow-meta">${esc(w.step)} · attempt ${esc(w.attempt || 1)} · ${esc(w.message || "")}</div>`);
+          const status = el("span", "workflow-state " + String(w.status || "").toLowerCase().replaceAll(" ", "-"), esc(w.status));
+          item.append(dot, detail, status); body.appendChild(item);
+        });
+        const latest = (history.history || [])[0];
+        if (latest) body.appendChild(el("div", "workflow-meta", `Latest audit · ${esc(latest.actor)} · ${esc(latest.action)} ${esc(latest.target)} · ${esc(latest.result)}`));
+      } catch (error) { state.textContent = "Unavailable"; }
     }
 
     // ---------- refresh — parallel per-section fetches ----------
@@ -1260,6 +1332,8 @@
       if (connected && s.ip) cells.push(monoLine(s.ip, true));
       const toggleBtn = btn(connected ? "Disconnect" : "Connect", connected ? "stop" : "start", (b) => toggleTailscale(b));
       toggleBtn.dataset.connected = connected ? "1" : "0";
+      toggleBtn.disabled = true;
+      toggleBtn.title = "Disabled until a dedicated allowlisted adapter exists";
       body.appendChild(row(cells, [toggleBtn], "tailscale"));
     }
 
@@ -1273,18 +1347,7 @@
     }
 
     async function toggleTailscale(b) {
-      b.disabled = true;
-      const original = b.textContent;
-      b.innerHTML = '<svg class="spinner" width="11" height="11" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="14 8" stroke-linecap="round"/></svg>';
-      try {
-        const res = await fetch("/api/tailscale/toggle", { method: "POST" });
-        const data = await res.json();
-        renderTailscale(data);
-        toast(data.connected ? "Tailscale connected" : "Tailscale disconnected", true);
-      } catch (e) {
-        toast(e.message || "Tailscale toggle failed", false);
-        loadTailscale();
-      }
+      b.disabled = true; toast("Tailscale mutation is disabled until a dedicated adapter exists", false);
     }
 
     // Escape closes Docker modal
@@ -1333,8 +1396,11 @@
 
     try { toggleDetails(localStorage.getItem("veda.details") === "1"); } catch (_) {}
     initSkeletons();
+    ensureSession();
     loadTailscale();
+    loadWorkflows();
     setInterval(loadTailscale, 15000);
+    setInterval(loadWorkflows, 3000);
     refreshAll();
     setInterval(refreshAll, 10000);
   </script>
