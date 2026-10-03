@@ -24,6 +24,13 @@ to this UI through exact `surfaceRefs` (`app`, `docker`, `vmware`, and
 workflow projection. Legacy mutation URLs remain available but return `202`
 after queueing a workflow.
 
+Monitoring remains a direct read path: loading or polling apps, containers,
+VMs, and health never submits a workflow. Lifecycle feedback is row-local and
+maps the durable state to Pending, Running, Done, or Failed. Submitted actions
+include a server-built link to the official Temporal UI execution; the
+`/temporal-ops/` link remains the secondary admin/policy console. Full workflow
+and audit records remain available through their existing backend endpoints.
+
 ```powershell
 python -m pip install -r requirements.txt
 python -m uvicorn main:app --host 127.0.0.1 --port 8765

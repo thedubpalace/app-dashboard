@@ -10,7 +10,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -26,6 +26,19 @@ SETTINGS_FILE = BASE_DIR / "settings.json"
 app = FastAPI(title="Veda Dashboard")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 _login_failures: dict[str, list[float]] = {}
+
+
+def _public_url(name: str, fallback: str) -> str:
+    value = os.getenv(name, fallback).rstrip("/")
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        return fallback.rstrip("/")
+    return value
+
+
+TEMPORAL_UI_URL = _public_url("TEMPORAL_UI_PUBLIC_URL", "https://pulsenprompt.duckdns.org/temporal-ui/")
+TEMPORAL_ADMIN_URL = _public_url("TEMPORAL_ADMIN_PUBLIC_URL", "https://pulsenprompt.duckdns.org/temporal-ops/")
+TEMPORAL_NAMESPACE = os.getenv("TEMPORAL_NAMESPACE", "default")
 
 
 @app.middleware("http")
@@ -100,6 +113,56 @@ def _temporal_error(exc: TemporalClientError) -> JSONResponse:
     return JSONResponse(exc.payload, status_code=exc.status)
 
 
+def _workflow_url(workflow: dict[str, Any]) -> str | None:
+    workflow_id = str(workflow.get("workflowId") or "")
+    if not workflow_id:
+        return None
+    root = f"{TEMPORAL_UI_URL}/namespaces/{quote(TEMPORAL_NAMESPACE, safe='')}/workflows/{quote(workflow_id, safe='')}"
+    run_id = str(workflow.get("runId") or "")
+    return f"{root}/{quote(run_id, safe='')}/history" if run_id else root
+
+
+def _compact_message(workflow: dict[str, Any], state: str) -> str:
+    status = str(workflow.get("status") or "")
+    message = re.sub(r"\s+", " ", str(workflow.get("message") or "")).strip()
+    if status.lower() == "retrying":
+        return message[:180] or "Retrying"
+    if status.lower() == "rolled back":
+        return "Previous state restored"
+    if status.lower() == "rollback failed":
+        return "Rollback failed · inspect in Temporal"
+    if status.lower() == "timed out":
+        return "Timed out · inspect in Temporal"
+    if state == "Pending":
+        return "Accepted by Temporal"
+    if state == "Running":
+        return message[:180] or "Temporal is applying the change"
+    if state == "Done":
+        return "Health confirmed"
+    return (message or status or "Request failed")[:180]
+
+
+def _project_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
+    status = str(workflow.get("status") or "").lower()
+    if status in {"accepted", "queued", "scheduled"}:
+        state = "Pending"
+    elif status in {"running", "retrying", "rollback in progress", "rollback-in-progress"}:
+        state = "Running"
+    elif status in {"succeeded", "rolled back"}:
+        state = "Done"
+    else:
+        state = "Failed"
+    return {
+        "resourceId": str(workflow.get("resourceId") or ""),
+        "operation": str(workflow.get("operation") or "action"),
+        "state": state,
+        "message": _compact_message(workflow, state),
+        "temporalUrl": _workflow_url(workflow),
+        "updatedAt": workflow.get("updatedAt"),
+        "duplicate": bool(workflow.get("duplicate")),
+    }
+
+
 def _submit(request: Request, resource: dict[str, Any] | None, action: str, *, target_mode: str | None = None) -> JSONResponse:
     session, error = _session_or_error(request)
     if error:
@@ -112,7 +175,8 @@ def _submit(request: Request, resource: dict[str, Any] | None, action: str, *, t
         return JSONResponse({"ok": False, "error": "invalid Idempotency-Key"}, status_code=400)
     try:
         result = client.submit(str(resource["id"]), action, key, actor=session["username"], target_mode=target_mode)
-        return JSONResponse(result, status_code=202)
+        projection_source = {"resourceId": str(resource["id"]), "operation": action, **result}
+        return JSONResponse({**result, "currentAction": _project_workflow(projection_source)}, status_code=202)
     except TemporalClientError as exc:
         return _temporal_error(exc)
 
@@ -243,6 +307,32 @@ async def status() -> dict[str, Any]:
 async def readiness() -> dict[str, Any]:
     sync = _control_snapshot().get("registrySync", {})
     return {"ok": sync.get("status") == "ready", **sync}
+
+
+@app.get("/api/actions")
+async def current_actions(request: Request) -> JSONResponse:
+    _, error = _session_or_error(request, check_csrf=False)
+    if error:
+        return error
+    try:
+        rows = client.workflows(actor="dashboard-read")
+        workflows = rows if isinstance(rows, list) else rows.get("workflows", [])
+        latest: dict[str, dict[str, Any]] = {}
+        for workflow in sorted(workflows, key=lambda item: str(item.get("updatedAt") or ""), reverse=True):
+            resource_id = str(workflow.get("resourceId") or "")
+            if resource_id and resource_id not in latest:
+                latest[resource_id] = _project_workflow(workflow)
+        return JSONResponse({"actions": list(latest.values())})
+    except TemporalClientError as exc:
+        return _temporal_error(exc)
+
+
+@app.get("/api/navigation")
+async def navigation(request: Request) -> JSONResponse:
+    session_value = read_session(request)
+    if not session_value:
+        return JSONResponse({"ok": False, "error": "authentication required"}, status_code=401)
+    return JSONResponse({"temporalUiUrl": f"{TEMPORAL_UI_URL}/", "adminUrl": f"{TEMPORAL_ADMIN_URL}/", "showAdmin": True})
 
 
 @app.get("/api/workflows")
