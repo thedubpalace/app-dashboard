@@ -36,8 +36,17 @@ adapter. Their read-only status views remain available.
 
 ## Local service deployment
 
-The dashboard runs as the limited-user Scheduled Task `Veda Dashboard` and
-listens only on `127.0.0.1:8765`. The task loads ignored `.env.runtime`; its
-machine credentials match Temporal and its session secret is independent.
+The dashboard runs as the limited-user Scheduled Task `Veda Dashboard`. The
+launcher loads the ignored `.env.runtime` before starting uvicorn. The
+launcher defaults to `0.0.0.0:8765`; production sets
+`VEDA_DASHBOARD_HOST=192.168.1.37` so the local Nginx Proxy Manager can reach an
+exact host address without exposing every interface. Use
+`VEDA_DASHBOARD_HOST` and `VEDA_DASHBOARD_PORT` to override that bind. Restrict
+inbound port 8765 to the trusted proxy/network boundary and use the public
+HTTPS URL for authenticated sessions because the production cookie is
+`Secure`.
+
+`start.bat` delegates to the same managed launcher, so a manual start uses the
+same runtime environment rather than creating an unconfigured second service.
 `settings.json` and `.codex/` remain user-owned and deployment does not replace
 them. Task Scheduler restarts the service after failure or logon.
