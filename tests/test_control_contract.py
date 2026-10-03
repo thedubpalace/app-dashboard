@@ -59,6 +59,18 @@ class TemporalClientContractTests(unittest.TestCase):
 
 
 class SourceBoundaryTests(unittest.TestCase):
+    def test_login_form_has_no_hardcoded_username(self):
+        source = Path("templates/index.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="loginUser" class="modal-input" autocomplete="username" placeholder="Username" value="admin"', source)
+        self.assertNotRegex(source, r'id="loginUser"[^>]+value=')
+
+    def test_login_errors_render_inside_accessible_modal_region(self):
+        source = Path("templates/index.html").read_text(encoding="utf-8")
+        self.assertRegex(source, r'id="loginError"[^>]+role="alert"[^>]+aria-live="assertive"')
+        self.assertIn('error.classList.remove("hidden")', source)
+        self.assertIn('error.textContent = ""; error.classList.add("hidden")', source)
+        self.assertNotIn('if (!res.ok) return toast(data.error || "Sign in failed", false)', source)
+
     def test_enabled_routes_do_not_call_mutating_services(self):
         source = Path("main.py").read_text(encoding="utf-8")
         for forbidden in ("docker_service.start(", "docker_service.stop(", "docker_service.restart(", "vmware_service.start_vm(", "vmware_service.stop_vm(", "subprocess.Popen("):

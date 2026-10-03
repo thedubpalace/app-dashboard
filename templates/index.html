@@ -481,6 +481,7 @@
     .auth-card { width:min(380px,100%); padding:24px; border:1px solid var(--glass-border); border-radius:var(--radius-panel); background:var(--glass-fill); box-shadow:var(--shadow-panel); }
     .auth-card h2 { margin:0 0 6px; font-size:22px; }.auth-card p { color:var(--label-secondary); margin:0 0 18px; font-size:13px; }
     .auth-card .modal-input { width:100%; margin:5px 0; }.auth-card .btn-modal { width:100%; margin-top:12px; }
+    .login-error { margin:10px 0 2px; padding:9px 12px; border-radius:12px; background:rgba(255,69,58,.14); color:#ffd4d1; font-size:12px; line-height:1.4; overflow-wrap:anywhere; }
     .workflow-list { display:grid; gap:8px; padding:0 12px 12px; }
     .workflow-item { display:grid; grid-template-columns:9px 1fr auto; gap:10px; align-items:center; padding:10px 12px; border-radius:12px; background:rgba(0,0,0,.16); }
     .workflow-item strong { font-size:12px; }.workflow-meta { color:var(--label-secondary); font:10px var(--font-mono); margin-top:2px; }
@@ -511,9 +512,10 @@
   <div id="authGate" class="auth-gate hidden">
     <form class="auth-card" onsubmit="loginDashboard(event)">
       <h2>Veda Control</h2><p>Sign in to queue allowlisted lifecycle workflows.</p>
-      <input id="loginUser" class="modal-input" autocomplete="username" placeholder="Username" value="admin" />
-      <input id="loginPassword" class="modal-input" type="password" autocomplete="current-password" placeholder="Password" />
-      <button class="btn-modal primary" type="submit">Sign in</button>
+      <input id="loginUser" class="modal-input" autocomplete="username" placeholder="Username" aria-label="Username" />
+      <input id="loginPassword" class="modal-input" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password" />
+      <div id="loginError" class="login-error hidden" role="alert" aria-live="assertive" aria-atomic="true"></div>
+      <button id="loginSubmit" class="btn-modal primary" type="submit">Sign in</button>
     </form>
   </div>
 
@@ -642,10 +644,22 @@
     }
     async function loginDashboard(event) {
       event.preventDefault();
-      const res = await fetch("/api/login", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ username:loginUser.value, password:loginPassword.value }) });
-      const data = await res.json();
-      if (!res.ok) return toast(data.error || "Sign in failed", false);
-      csrfToken = data.csrfToken; document.getElementById("authGate").classList.add("hidden"); refreshAll(); loadWorkflows();
+      const submit = document.getElementById("loginSubmit");
+      const error = document.getElementById("loginError");
+      error.textContent = ""; error.classList.add("hidden"); submit.disabled = true;
+      try {
+        const res = await fetch("/api/login", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ username:loginUser.value, password:loginPassword.value }) });
+        let data = {}; try { data = await res.json(); } catch (_) {}
+        if (!res.ok) {
+          error.textContent = data.error || (res.status === 429 ? "Too many attempts. Wait before trying again." : "Sign in failed. Check your credentials and try again.");
+          error.classList.remove("hidden"); return;
+        }
+        error.textContent = ""; error.classList.add("hidden");
+        csrfToken = data.csrfToken; document.getElementById("authGate").classList.add("hidden"); refreshAll(); loadWorkflows();
+      } catch (_) {
+        error.textContent = "Unable to reach the dashboard. Check the connection and try again.";
+        error.classList.remove("hidden");
+      } finally { submit.disabled = false; }
     }
     async function ensureSession() {
       const data = await fetch("/api/session").then(r => r.json()).catch(() => ({}));
