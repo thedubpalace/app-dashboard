@@ -133,6 +133,33 @@ class FacadeFailureTests(unittest.TestCase):
             self.assertEqual(main._vmware()["vms"], [])
         submit.assert_not_called()
 
+    def test_exact_process_surfaces_receive_only_project_scoped_capabilities(self):
+        snapshot = {
+            "resources": [
+                {"id": "process.skill-finder", "adapter": "process", "revision": 3, "state": "Stopped", "health": "Not configured", "surfaceRefs": [{"surface": "app", "key": "skill-finder"}], "capabilities": [{"operation": "start", "allowed": True}]},
+                {"id": "process.html-hub", "adapter": "process", "revision": 2, "state": "Running", "health": "Healthy", "surfaceRefs": [{"surface": "app", "key": "html-hub"}], "capabilities": [{"operation": "stop", "allowed": True}, {"operation": "restart", "allowed": True}]},
+            ],
+            "registrySync": {"status": "ready"},
+        }
+        apps = [
+            {"name": "skill-finder", "status": "stopped", "healthCheck": {"type": "http", "target": "http://localhost:5002/health"}},
+            {"name": "html-hub", "status": "running", "healthCheck": {"type": "http", "target": "http://localhost:5005/health"}},
+        ]
+        with patch.object(main.client, "resources", return_value=snapshot), patch.object(main.veda_apps, "snapshot_processes", return_value=[]), \
+             patch.object(main.veda_apps, "list_apps", return_value=apps), patch.object(main.nginx_proxy, "public_urls", return_value={}):
+            rows = {row["name"]: row for row in main._apps()}
+        self.assertEqual(rows["skill-finder"]["resourceId"], "process.skill-finder")
+        self.assertEqual(rows["skill-finder"]["capabilities"], [{"operation": "start", "allowed": True}])
+        self.assertEqual(rows["html-hub"]["resourceId"], "process.html-hub")
+        self.assertEqual({item["operation"] for item in rows["html-hub"]["capabilities"]}, {"stop", "restart"})
+
+    def test_unowned_process_conflict_is_read_only_and_never_killed_by_port(self):
+        item = {"name": "skill-finder", "status": "running"}
+        resource = {"id": "process.skill-finder", "adapter": "process", "state": "Stopped", "capabilities": [{"operation": "stop", "allowed": True}]}
+        main._decorate(item, resource)
+        self.assertEqual(item["capabilities"], [])
+        self.assertIn("not owned by Temporal", item["ownershipConflict"])
+
     def test_action_poll_returns_latest_compact_projection_without_submit(self):
         workflows = [
             {"resourceId": "docker.demo", "operation": "start", "status": "Succeeded", "workflowId": "new", "runId": "run-new", "updatedAt": "2026-10-03T10:00:00Z"},

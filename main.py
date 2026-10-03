@@ -94,6 +94,11 @@ def _decorate(item: dict[str, Any], resource: dict[str, Any] | None) -> None:
         item.update({"classification": "unmanaged", "capabilities": [], "unsupportedReason": "Not present in the signed Veda allowlist"})
         return
     item.update({"resourceId": resource.get("id"), "resourceRevision": resource.get("revision"), "classification": resource.get("classification", "managed"), "capabilities": resource.get("capabilities", []), "unsupportedReason": resource.get("unsupportedReason"), "controlStatus": resource.get("state"), "controlHealth": resource.get("health"), "observationError": resource.get("observationError")})
+    direct_running = str(item.get("status", "")).lower() == "running"
+    owned_running = str(resource.get("state", "")).lower() == "running"
+    if resource.get("adapter") == "process" and direct_running and not owned_running:
+        item["ownershipConflict"] = "A process is serving this endpoint but is not owned by Temporal; lifecycle controls are disabled"
+        item["capabilities"] = []
 
 
 def _session_or_error(request: Request, *, check_csrf: bool = True) -> tuple[dict[str, str] | None, JSONResponse | None]:

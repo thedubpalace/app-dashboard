@@ -647,7 +647,7 @@
     const intentKeys = new Map();
     const actionByResource = new Map();
     function hasCapability(item, operation) { return (item.capabilities || []).some(c => c.operation === operation && c.allowed); }
-    function controlHint(item) { return item.observationError || item.unsupportedReason || (item.classification && item.classification !== "managed" ? `${item.classification}: lifecycle actions disabled` : item.controlStatus === "Unavailable" ? "Adapter dependency unavailable" : ""); }
+    function controlHint(item) { return item.ownershipConflict || item.observationError || item.unsupportedReason || (item.classification && item.classification !== "managed" ? `${item.classification}: lifecycle actions disabled` : item.controlStatus === "Unavailable" ? "Adapter dependency unavailable" : ""); }
     function mutationHeaders(body, intent) {
       const compact = intent.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 48);
       const key = intentKeys.get(intent) || `intent_${compact}_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -1023,6 +1023,7 @@
     // "Backend" inside a group) while API calls still use the real a.name.
     function buildAppRow(a, displayName) {
       const running = a.status === "running";
+      const controlRunning = a.resourceId ? String(a.controlStatus).toLowerCase() === "running" : running;
       const mon = a.monitorable !== false;
       const n = a.claudeSessions || 0;
       const codexSessions = a.codexSessions || 0;
@@ -1040,9 +1041,9 @@
       const btns = [];
       if (hasCapability(a, "switch-mode")) btns.push(modeSeg(a));
       if (a.resourceId) {
-        if (running && hasCapability(a, "stop")) btns.push(btn("Stop", "stop", (b) => action(b, `/api/apps/${enc}/stop`)));
-        if (!running && hasCapability(a, "start")) btns.push(btn("Start", "start", (b) => action(b, `/api/apps/${enc}/start`)));
-        if (hasCapability(a, "restart")) btns.push(btn("Restart", "restart", (b) => action(b, `/api/apps/${enc}/restart`, undefined, 5000, true, "Queued…")));
+        if (controlRunning && hasCapability(a, "stop")) btns.push(btn("Stop", "stop", (b) => action(b, `/api/apps/${enc}/stop`)));
+        if (!controlRunning && hasCapability(a, "start")) btns.push(btn("Start", "start", (b) => action(b, `/api/apps/${enc}/start`)));
+        if (controlRunning && hasCapability(a, "restart")) btns.push(btn("Restart", "restart", (b) => action(b, `/api/apps/${enc}/restart`, undefined, 5000, true, "Queued…")));
       }
       if (a.localPath) {
         const openClaude = btn("Claude", "shell", (b) => action(b, `/api/apps/${enc}/shell`));

@@ -31,6 +31,13 @@ include a server-built link to the official Temporal UI execution; the
 `/temporal-ops/` link remains the secondary admin/policy console. Full workflow
 and audit records remain available through their existing backend endpoints.
 
+Local process lifecycle is enabled only for the exact signed
+`process.skill-finder` and `process.html-hub` registry resources. Their Start,
+Stop, and Restart buttons use Temporal's owned-process state rather than a port
+match. If a health endpoint is served by a process that Temporal did not
+launch, the row remains observable but lifecycle controls fail closed; the
+dashboard never kills a PID, process name, or port directly.
+
 ```powershell
 python -m pip install -r requirements.txt
 python -m uvicorn main:app --host 127.0.0.1 --port 8765
