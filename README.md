@@ -38,6 +38,12 @@ match. If a health endpoint is served by a process that Temporal did not
 launch, the row remains observable but lifecycle controls fail closed; the
 dashboard never kills a PID, process name, or port directly.
 
+Control readiness requires both a ready registry projection and live Temporal
+plus worker heartbeat state. Resource capabilities are disabled server-side
+when the required worker task queue is stale. A rejected submission remains as
+the row's latest Failed action instead of being overwritten by an older
+successful workflow; it clears when a newer workflow is accepted or observed.
+
 ```powershell
 python -m pip install -r requirements.txt
 python -m uvicorn main:app --host 127.0.0.1 --port 8765

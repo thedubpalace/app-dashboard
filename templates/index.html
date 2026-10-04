@@ -647,7 +647,7 @@
     const intentKeys = new Map();
     const actionByResource = new Map();
     function hasCapability(item, operation) { return (item.capabilities || []).some(c => c.operation === operation && c.allowed); }
-    function controlHint(item) { return item.ownershipConflict || item.observationError || item.unsupportedReason || (item.classification && item.classification !== "managed" ? `${item.classification}: lifecycle actions disabled` : item.controlStatus === "Unavailable" ? "Adapter dependency unavailable" : ""); }
+    function controlHint(item) { return item.ownershipConflict || item.capabilityReason || item.observationError || item.unsupportedReason || (item.classification && item.classification !== "managed" ? `${item.classification}: lifecycle actions disabled` : item.controlStatus === "Unavailable" ? "Adapter dependency unavailable" : ""); }
     function mutationHeaders(body, intent) {
       const compact = intent.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 48);
       const key = intentKeys.get(intent) || `intent_${compact}_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -813,7 +813,8 @@
           if (data.duplicate) toast("Already queued — showing the same workflow", true);
           loadActions();
         } else {
-          if (resourceId) setCurrentAction({ resourceId, operation:verb, state:"Failed", message:data.error || data.message || "Request rejected", temporalUrl:null });
+          if (data.currentAction) setCurrentAction(data.currentAction);
+          else if (resourceId) setCurrentAction({ resourceId, operation:verb, state:"Failed", message:data.error || data.message || "Request rejected", temporalUrl:null, updatedAt:new Date().toISOString() });
           toast(data.message || data.error || (ok ? "Done" : "Failed"), ok);
         }
       } catch (e) {

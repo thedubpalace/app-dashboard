@@ -120,6 +120,10 @@ class FacadeFailureTests(unittest.TestCase):
                 self.assertEqual(payload["currentAction"]["operation"], "start")
                 self.assertIn("/temporal-ui/namespaces/", payload["currentAction"]["temporalUrl"])
                 submit.assert_called_once_with("docker.demo", "start", "intent_test_123456", actor="alice", target_mode=None)
+                old = {"resourceId": "docker.demo", "operation": "stop", "status": "Succeeded", "workflowId": "old", "updatedAt": "2026-10-03T09:00:00Z"}
+                with patch.object(main.client, "workflows", return_value=[old]):
+                    polled = asyncio.run(main.current_actions(self._request(cookie)))
+                self.assertEqual(json.loads(polled.body)["actions"][0]["workflowId"], "veda-demo-start")
 
     def test_monitoring_reads_never_submit_workflows(self):
         snapshot = {"resources": [], "registrySync": {"status": "ready"}}
@@ -161,6 +165,7 @@ class FacadeFailureTests(unittest.TestCase):
         self.assertIn("not owned by Temporal", item["ownershipConflict"])
 
     def test_action_poll_returns_latest_compact_projection_without_submit(self):
+        main._submission_overrides.clear()
         workflows = [
             {"resourceId": "docker.demo", "operation": "start", "status": "Succeeded", "workflowId": "new", "runId": "run-new", "updatedAt": "2026-10-03T10:00:00Z"},
             {"resourceId": "docker.demo", "operation": "stop", "status": "Failed", "workflowId": "old", "runId": "run-old", "updatedAt": "2026-10-03T09:00:00Z"},
@@ -175,6 +180,34 @@ class FacadeFailureTests(unittest.TestCase):
         self.assertEqual(payload["actions"][0]["state"], "Done")
         self.assertIn("run-new/history", payload["actions"][0]["temporalUrl"])
         submit.assert_not_called()
+
+    def test_rejected_submission_stays_visible_over_older_success_until_new_acceptance(self):
+        main._submission_overrides.clear()
+        old = {"resourceId": "process.skill-finder", "operation": "start", "status": "Succeeded", "workflowId": "old", "runId": "old-run", "updatedAt": "2026-10-03T09:00:00Z"}
+        with patch.dict(os.environ, {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret"}):
+            cookie, csrf = create_session("alice")
+            request = self._request(cookie, csrf)
+            with patch.object(main.client, "submit", side_effect=main.TemporalClientError("Required worker task queue is offline", 503)):
+                rejected = main._submit(request, {"id": "process.skill-finder"}, "stop")
+            self.assertEqual(rejected.status_code, 503)
+            self.assertEqual(json.loads(rejected.body)["currentAction"]["state"], "Failed")
+            with patch.object(main.client, "workflows", return_value=[old]):
+                polled = asyncio.run(main.current_actions(request))
+            action = json.loads(polled.body)["actions"][0]
+            self.assertEqual(action["state"], "Failed")
+            self.assertIn("worker task queue is offline", action["message"])
+            newer = {**old, "operation": "stop", "workflowId": "new", "runId": "new-run", "updatedAt": "2027-10-04T09:00:00Z"}
+            with patch.object(main.client, "workflows", return_value=[newer]):
+                reconciled = asyncio.run(main.current_actions(request))
+            self.assertEqual(json.loads(reconciled.body)["actions"][0]["state"], "Done")
+            self.assertNotIn("process.skill-finder", main._submission_overrides)
+
+    def test_dashboard_readiness_fails_closed_for_stale_worker(self):
+        snapshot = {"registrySync": {"status": "ready", "revision": "r1"}, "readiness": {"temporal": True, "worker": False, "docker": True}}
+        with patch.object(main, "_control_snapshot", return_value=snapshot):
+            result = asyncio.run(main.readiness())
+        self.assertFalse(result["ok"])
+        self.assertIn("worker task queue is offline", result["error"])
 
 
 class CompactActionProjectionTests(unittest.TestCase):

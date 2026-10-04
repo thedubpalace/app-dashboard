@@ -8,6 +8,7 @@ import re
 import subprocess
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -26,6 +27,7 @@ SETTINGS_FILE = BASE_DIR / "settings.json"
 app = FastAPI(title="Veda Dashboard")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 _login_failures: dict[str, list[float]] = {}
+_submission_overrides: dict[str, dict[str, Any]] = {}
 
 
 def _public_url(name: str, fallback: str) -> str:
@@ -94,6 +96,9 @@ def _decorate(item: dict[str, Any], resource: dict[str, Any] | None) -> None:
         item.update({"classification": "unmanaged", "capabilities": [], "unsupportedReason": "Not present in the signed Veda allowlist"})
         return
     item.update({"resourceId": resource.get("id"), "resourceRevision": resource.get("revision"), "classification": resource.get("classification", "managed"), "capabilities": resource.get("capabilities", []), "unsupportedReason": resource.get("unsupportedReason"), "controlStatus": resource.get("state"), "controlHealth": resource.get("health"), "observationError": resource.get("observationError")})
+    denied_reason = next((str(capability.get("reason")) for capability in item["capabilities"] if not capability.get("allowed") and capability.get("reason")), "")
+    if denied_reason and ("offline" in denied_reason.lower() or "unavailable" in denied_reason.lower()):
+        item["capabilityReason"] = denied_reason
     direct_running = str(item.get("status", "")).lower() == "running"
     owned_running = str(resource.get("state", "")).lower() == "running"
     if resource.get("adapter") == "process" and direct_running and not owned_running:
@@ -165,7 +170,16 @@ def _project_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
         "temporalUrl": _workflow_url(workflow),
         "updatedAt": workflow.get("updatedAt"),
         "duplicate": bool(workflow.get("duplicate")),
+        "workflowId": workflow.get("workflowId"),
+        "runId": workflow.get("runId"),
     }
+
+
+def _timestamp(value: Any) -> float:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _submit(request: Request, resource: dict[str, Any] | None, action: str, *, target_mode: str | None = None) -> JSONResponse:
@@ -180,10 +194,15 @@ def _submit(request: Request, resource: dict[str, Any] | None, action: str, *, t
         return JSONResponse({"ok": False, "error": "invalid Idempotency-Key"}, status_code=400)
     try:
         result = client.submit(str(resource["id"]), action, key, actor=session["username"], target_mode=target_mode)
-        projection_source = {"resourceId": str(resource["id"]), "operation": action, **result}
-        return JSONResponse({**result, "currentAction": _project_workflow(projection_source)}, status_code=202)
+        projection_source = {"resourceId": str(resource["id"]), "operation": action, "updatedAt": datetime.now(timezone.utc).isoformat(), **result}
+        projection = _project_workflow(projection_source)
+        _submission_overrides[str(resource["id"])] = projection
+        return JSONResponse({**result, "currentAction": projection}, status_code=202)
     except TemporalClientError as exc:
-        return _temporal_error(exc)
+        failure = {"resourceId": str(resource["id"]), "operation": action, "status": "Rejected", "message": str(exc), "updatedAt": datetime.now(timezone.utc).isoformat()}
+        projection = _project_workflow(failure)
+        _submission_overrides[str(resource["id"])] = projection
+        return JSONResponse({**exc.payload, "currentAction": projection}, status_code=exc.status)
 
 
 def _unsupported() -> JSONResponse:
@@ -310,8 +329,18 @@ async def status() -> dict[str, Any]:
 
 @app.get("/api/control/readiness")
 async def readiness() -> dict[str, Any]:
-    sync = _control_snapshot().get("registrySync", {})
-    return {"ok": sync.get("status") == "ready", **sync}
+    snapshot = _control_snapshot()
+    sync, dependencies = snapshot.get("registrySync", {}), snapshot.get("readiness", {})
+    ok = sync.get("status") == "ready" and dependencies.get("temporal") is True and dependencies.get("worker") is True
+    if sync.get("status") != "ready":
+        reason = str(sync.get("error") or "Registry synchronization is degraded")
+    elif dependencies.get("worker") is not True:
+        reason = "Required worker task queue is offline"
+    elif dependencies.get("temporal") is not True:
+        reason = "Temporal control plane is unavailable"
+    else:
+        reason = ""
+    return {"ok": ok, **sync, "dependencies": dependencies, "error": reason}
 
 
 @app.get("/api/actions")
@@ -327,6 +356,14 @@ async def current_actions(request: Request) -> JSONResponse:
             resource_id = str(workflow.get("resourceId") or "")
             if resource_id and resource_id not in latest:
                 latest[resource_id] = _project_workflow(workflow)
+        for resource_id, override in list(_submission_overrides.items()):
+            remote = latest.get(resource_id)
+            same_workflow = bool(remote and override.get("workflowId") and remote.get("workflowId") == override.get("workflowId"))
+            newer_remote = bool(remote and _timestamp(remote.get("updatedAt")) > _timestamp(override.get("updatedAt")))
+            if same_workflow or newer_remote:
+                _submission_overrides.pop(resource_id, None)
+            else:
+                latest[resource_id] = override
         return JSONResponse({"actions": list(latest.values())})
     except TemporalClientError as exc:
         return _temporal_error(exc)
