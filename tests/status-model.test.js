@@ -58,3 +58,9 @@ test("matching direct and projected states have no duplicate secondary label", (
   assert.equal(result.primary.label, "Stopped");
   assert.equal(result.secondary, "");
 });
+
+test("matching Missing observation and Temporal projection show one explicit status", () => {
+  const result = merge({ status: "missing", controlStatus: "Missing" }, null, NOW);
+  assert.equal(result.primary.label, "Missing");
+  assert.equal(result.secondary, "");
+});

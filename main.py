@@ -103,6 +103,12 @@ def _decorate(item: dict[str, Any], resource: dict[str, Any] | None) -> None:
         item["capabilityReason"] = denied_reason
     direct_running = str(item.get("status", "")).lower() == "running"
     owned_running = str(resource.get("state", "")).lower() == "running"
+    if item.get("statusSource") == "docker" and str(item.get("status", "")).lower() == "missing":
+        item["capabilities"] = [
+            {**capability, "allowed": False, "reason": "Docker container is missing; Compose creation is not configured"}
+            for capability in item["capabilities"]
+        ]
+        item["capabilityReason"] = "Docker container is missing; Compose creation is not configured"
     if resource.get("adapter") == "process" and direct_running and not owned_running:
         item["ownershipConflict"] = "A process is serving this endpoint but is not owned by Temporal; lifecycle controls are disabled"
         item["capabilities"] = []
@@ -292,7 +298,7 @@ def _apps() -> list[dict[str, Any]]:
             if not container_name:
                 continue
             container = containers.get(_norm(str(container_name)))
-            item["status"] = container.get("status", "stopped") if container else "stopped"
+            item["status"] = container.get("status", "unknown") if container else "missing"
             item["statusSource"] = "docker"
             if container and container.get("statusText"):
                 item["containerStatusText"] = container["statusText"]

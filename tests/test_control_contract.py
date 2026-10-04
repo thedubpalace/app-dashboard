@@ -304,7 +304,7 @@ class FacadeFailureTests(unittest.TestCase):
         self.assertEqual(rows["temporal-service-orchestrator"]["status"], "running")
         self.assertEqual(rows["temporal-service-orchestrator"]["statusSource"], "docker")
         self.assertEqual(rows["temporal-service-orchestrator"]["containerStatusText"], "Up 2 hours (healthy)")
-        self.assertEqual(rows["matchday"]["status"], "stopped")
+        self.assertEqual(rows["matchday"]["status"], "missing")
 
     def test_docker_unavailable_keeps_registry_health_status(self):
         apps = [{"name": "container-app", "status": "running", "containerName": "container-app"}]
@@ -327,6 +327,16 @@ class FacadeFailureTests(unittest.TestCase):
             result = main._apps()[0]
         self.assertEqual(result["status"], "running")
         self.assertEqual(result["statusSource"], "self")
+
+    def test_missing_docker_container_is_explicit_and_lifecycle_controls_are_denied(self):
+        item = {"name": "daddy-medicine", "status": "missing", "statusSource": "docker", "capabilities": [
+            {"operation": operation, "allowed": True} for operation in ("start", "stop", "restart")
+        ]}
+        resource = {"id": "docker.daddy-medicine", "adapter": "docker", "state": "Missing", "capabilities": item["capabilities"]}
+        main._decorate(item, resource)
+        self.assertEqual(item["status"], "missing")
+        self.assertTrue(all(not capability["allowed"] for capability in item["capabilities"]))
+        self.assertIn("Compose creation is not configured", item["capabilityReason"])
 
     def test_unowned_process_conflict_is_read_only_and_never_killed_by_port(self):
         item = {"name": "skill-finder", "status": "running"}

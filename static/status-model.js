@@ -17,6 +17,7 @@
 
   function observedStatus(item) {
     const raw = String(item?.status || "").trim().toLowerCase();
+    if (raw === "missing") return { key: "missing", label: "Missing", tone: "unknown" };
     if (item?.statusStale === true || raw === "stale") return { key: "stale", label: "Stale", tone: "unknown" };
     if (["running", "online", "up", "connected"].includes(raw)) return { key: "running", label: "Running", tone: "on" };
     if (["stopped", "offline", "down", "disconnected", "exited"].includes(raw)) return { key: "stopped", label: "Stopped", tone: "off" };
@@ -25,6 +26,7 @@
 
   function controlStatus(value) {
     const raw = String(value || "").trim().toLowerCase();
+    if (raw === "missing") return { key: "missing", label: "Missing" };
     if (["running", "online", "up", "connected"].includes(raw)) return { key: "running", label: "Running" };
     if (["stopped", "offline", "down", "disconnected", "exited"].includes(raw)) return { key: "stopped", label: "Stopped" };
     if (raw === "unavailable") return { key: "unavailable", label: "Unavailable" };
