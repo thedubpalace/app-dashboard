@@ -307,6 +307,7 @@
     }
     .pill-badge.on  { color: var(--sys-green); background: rgba(48,209,88,0.16); border-color: rgba(48,209,88,0.32); }
     .pill-badge.off { color: var(--label-tertiary); background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.12); }
+    .pill-badge.unknown { color: var(--sys-orange); background: rgba(255,159,10,0.12); border-color: rgba(255,159,10,0.28); }
 
     .desc-line {
       font-size: 11.5px; color: var(--label-secondary);
@@ -642,6 +643,7 @@
 
   </div>
 
+  <script src="/static/status-model.js"></script>
   <script>
     let csrfToken = "";
     const intentKeys = new Map();
@@ -664,8 +666,16 @@
     function updateActionRow(row) {
       const action = actionByResource.get(row.dataset.resourceId);
       let line = row.querySelector(".action-state");
-      if (!action) { line?.remove(); return; }
-      const signature = `${action.operation}|${action.state}|${action.message}|${action.temporalUrl || ""}`;
+      const merged = VedaStatusModel.merge(row.statusItem || {}, action);
+      const pill = row.querySelector(".pill-badge"), dot = row.querySelector(".status-dot");
+      if (pill) { pill.className = `pill-badge ${merged.primary.tone}`; pill.textContent = merged.primary.label; }
+      if (dot) dot.classList.toggle("is-on", merged.primary.key === "running");
+      if (!merged.secondary && !merged.temporalUrl) {
+        line?.remove(); row.setAttribute("aria-busy", "false");
+        row.querySelectorAll(".row-actions button").forEach(button => { if (button.dataset.locked !== "1") button.disabled = false; });
+        return;
+      }
+      const signature = `${merged.secondary}|${merged.secondaryState}|${merged.message}|${merged.temporalUrl}`;
       if (line?.dataset.signature === signature) return;
       if (!line) {
         line = document.createElement("div");
@@ -674,19 +684,20 @@
         const link = document.createElement("a"); link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "View in Temporal ↗";
         line.append(summary, link); row.appendChild(line);
       }
-      line.className = `action-state ${String(action.state).toLowerCase()}`;
+      line.className = `action-state ${merged.secondaryState}${merged.secondary ? "" : " link-only"}`;
       line.dataset.signature = signature;
-      line.querySelector(".action-label").textContent = `${action.operation} · ${action.state}`;
-      line.querySelector(".action-message").textContent = action.message || "";
-      const link = line.querySelector("a"); link.classList.toggle("hidden", !action.temporalUrl);
-      if (action.temporalUrl) { link.href = action.temporalUrl; link.setAttribute("aria-label", `View ${action.operation} for ${row.dataset.resourceName || row.dataset.resourceId} in Temporal (opens in new tab)`); }
-      const busy = action.state === "Pending" || action.state === "Running";
+      const summary = line.querySelector(".action-summary"); summary.classList.toggle("hidden", !merged.secondary);
+      line.querySelector(".action-label").textContent = merged.secondary;
+      line.querySelector(".action-message").textContent = merged.message;
+      const link = line.querySelector("a"); link.classList.toggle("hidden", !merged.temporalUrl);
+      if (merged.temporalUrl) { link.href = merged.temporalUrl; link.setAttribute("aria-label", `View ${action?.operation || "workflow"} for ${row.dataset.resourceName || row.dataset.resourceId} in Temporal (opens in new tab)`); }
+      const busy = merged.busy;
       row.setAttribute("aria-busy", busy ? "true" : "false");
       row.querySelectorAll(".row-actions button").forEach(button => { if (button.dataset.locked !== "1") button.disabled = busy; });
     }
     function controlledRow(cells, buttons, key, item) {
       const result = row(cells, buttons, key);
-      if (item?.resourceId) { result.dataset.resourceId = item.resourceId; result.dataset.resourceName = item.name || item.resourceId; updateActionRow(result); }
+      if (item?.resourceId) { result.dataset.resourceId = item.resourceId; result.dataset.resourceName = item.name || item.resourceId; result.statusItem = item; updateActionRow(result); }
       return result;
     }
     async function loadNavigation() {
@@ -744,8 +755,9 @@
 
     function statusPill(isRunning) {
       const p = document.createElement("span");
-      p.className = "pill-badge " + (isRunning ? "on" : "off");
-      p.textContent = isRunning ? "Running" : "Stopped";
+      const status = VedaStatusModel.observedStatus({ status: typeof isRunning === "boolean" ? (isRunning ? "running" : "stopped") : isRunning });
+      p.className = "pill-badge " + status.tone;
+      p.textContent = status.label;
       return p;
     }
 

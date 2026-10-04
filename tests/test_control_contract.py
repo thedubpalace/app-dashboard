@@ -79,7 +79,8 @@ class SourceBoundaryTests(unittest.TestCase):
             self.assertNotIn(removed, source)
         self.assertNotIn('fetch("/api/history")', source)
         self.assertNotIn('fetch("/api/workflows")', source)
-        self.assertIn('className = `action-state ${String(action.state).toLowerCase()}`', source)
+        self.assertIn('className = `action-state ${merged.secondaryState}', source)
+        self.assertIn('VedaStatusModel.merge(row.statusItem || {}, action)', source)
         self.assertIn("View in Temporal ↗", source)
         self.assertIn("Admin console", source)
 
