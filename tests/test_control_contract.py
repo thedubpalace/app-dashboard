@@ -7,8 +7,9 @@ import os
 import time
 import unittest
 import asyncio
+import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from services.dashboard_auth import create_session, read_session
 from services.temporal_client import TemporalOrchestratorClient
@@ -84,14 +85,108 @@ class SourceBoundaryTests(unittest.TestCase):
 
     def test_enabled_routes_do_not_call_mutating_services(self):
         source = Path("main.py").read_text(encoding="utf-8")
-        for forbidden in ("docker_service.start(", "docker_service.stop(", "docker_service.restart(", "vmware_service.start_vm(", "vmware_service.stop_vm(", "subprocess.Popen("):
+        for forbidden in ("docker_service.start(", "docker_service.stop(", "docker_service.restart(", "vmware_service.start_vm(", "vmware_service.stop_vm("):
             self.assertNotIn(forbidden, source)
 
-    def test_auxiliary_actions_are_explicitly_disabled(self):
+    def test_privileged_auxiliary_actions_remain_disabled(self):
         source = Path("main.py").read_text(encoding="utf-8")
         self.assertIn("status_code=501", source)
         self.assertIn('/api/system/restart', source)
         self.assertIn('/api/tailscale/toggle', source)
+
+    def test_claude_and_codex_buttons_use_dedicated_interactive_action(self):
+        source = Path("templates/index.html").read_text(encoding="utf-8")
+        self.assertIn('auxiliaryAction(b, `/api/apps/${enc}/shell`)', source)
+        self.assertIn('auxiliaryAction(b, `/api/apps/${enc}/codex`)', source)
+        self.assertIn('auxiliaryAction(b, `/api/apps/${enc}/claude-sessions/kill-all`)', source)
+        self.assertIn('auxiliaryAction(b, `/api/apps/${enc}/codex-sessions/kill-all`)', source)
+        self.assertNotIn('openClaude.disabled = true', source)
+        self.assertNotIn('openCodex.disabled = true', source)
+
+
+class InteractiveToolTests(unittest.TestCase):
+    def _request(self, cookie: str = "", csrf: str = ""):
+        return type("Request", (), {"cookies": {"veda_dashboard_session": cookie} if cookie else {}, "headers": {"x-csrf-token": csrf, "idempotency-key": "interactive_test_123456"}})()
+
+    def _session(self):
+        cookie, csrf = create_session("alice")
+        return self._request(cookie, csrf)
+
+    def test_claude_launch_uses_registered_project_path_and_fixed_command(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret"}), \
+             patch.object(main.veda_apps, "get_app", return_value={"name": "demo", "localPath": folder}), \
+             patch.object(main.subprocess, "Popen") as popen:
+            response = asyncio.run(main.app_lifecycle("demo", "shell", self._session()))
+        self.assertEqual(response.status_code, 200)
+        args = popen.call_args.args[0]
+        self.assertEqual(args[:3], ["powershell", "-NoExit", "-Command"])
+        self.assertEqual(args[3], f"Set-Location -LiteralPath '{str(Path(folder).resolve())}'; claude remote-control")
+        self.assertFalse(popen.call_args.kwargs["shell"])
+
+    def test_codex_launch_uses_registered_project_path_and_resolved_executable(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret"}), \
+             patch.object(main.veda_apps, "get_app", return_value={"name": "demo", "localPath": folder}), \
+             patch.object(main, "_find_codex_executable", return_value=r"C:\Tools\codex.exe"), \
+             patch.object(main.subprocess, "Popen") as popen:
+            response = asyncio.run(main.app_lifecycle("demo", "codex", self._session()))
+        self.assertEqual(response.status_code, 200)
+        command = popen.call_args.args[0][3]
+        self.assertIn(f"Set-Location -LiteralPath '{str(Path(folder).resolve())}'", command)
+        self.assertIn("& 'C:\\Tools\\codex.exe'", command)
+        self.assertFalse(popen.call_args.kwargs["shell"])
+
+    def test_interactive_launch_rejects_unknown_project_without_spawning(self):
+        with patch.dict(os.environ, {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret"}), \
+             patch.object(main.veda_apps, "get_app", return_value=None), patch.object(main.subprocess, "Popen") as popen:
+            response = asyncio.run(main.app_lifecycle("not-registered", "shell", self._session()))
+        self.assertEqual(response.status_code, 404)
+        popen.assert_not_called()
+
+    def test_session_termination_is_scoped_to_registered_tool_and_path(self):
+        process = MagicMock()
+        process.pid = 42
+        process.name.return_value = "powershell.exe"
+        process.cmdline.return_value = ["powershell", "-Command", "claude remote-control"]
+        process.children.return_value = []
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret"}), \
+             patch.object(main.veda_apps, "get_app", return_value={"name": "demo", "localPath": folder}), \
+             patch.object(main, "_find_tool_sessions", return_value=[{"pid": 42, "path": folder}]) as finder, \
+             patch.object(main.psutil, "Process", return_value=process), patch.object(main.psutil, "wait_procs", return_value=([process], [])):
+            response = asyncio.run(main.kill_tool_sessions("demo", "claude", self._session()))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.body)["killed"], 1)
+        self.assertEqual(finder.call_args_list[0].kwargs, {"app_path": str(Path(folder).resolve())})
+        self.assertEqual(finder.call_args_list[1].kwargs["app_path"], str(Path(folder).resolve()))
+        self.assertEqual(finder.call_args_list[1].kwargs["processes"][0]["pid"], 42)
+        process.terminate.assert_called_once_with()
+
+    def test_interactive_mutations_require_session_and_csrf(self):
+        response = asyncio.run(main.app_lifecycle("demo", "shell", self._request()))
+        self.assertEqual(response.status_code, 401)
+        with patch.dict(os.environ, {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret"}):
+            cookie, _ = create_session("alice")
+            response = asyncio.run(main.app_lifecycle("demo", "codex", self._request(cookie, "wrong")))
+        self.assertEqual(response.status_code, 403)
+
+    def test_session_termination_rechecks_live_identity_before_kill(self):
+        process = MagicMock(pid=42)
+        process.name.return_value = "powershell.exe"
+        process.cmdline.return_value = ["powershell", "-Command", "something-else"]
+        with patch.object(main, "_find_tool_sessions", side_effect=[[{"pid": 42, "path": r"C:\Code\Demo"}], []]), \
+             patch.object(main.psutil, "Process", return_value=process):
+            killed = main._terminate_tool_sessions("claude", Path(r"C:\Code\Demo"))
+        self.assertEqual(killed, 0)
+        process.terminate.assert_not_called()
+
+    def test_app_inventory_reports_path_scoped_session_counts(self):
+        rows = [{"name": "demo", "localPath": r"C:\Code\Demo"}, {"name": "other", "localPath": r"C:\Code\Other"}]
+        processes = [
+            {"pid": 1, "name": "powershell.exe", "cmdline": ["powershell", "-Command", r"Set-Location -LiteralPath 'C:\Code\Demo'; claude remote-control"]},
+            {"pid": 2, "name": "powershell.exe", "cmdline": ["powershell", "-Command", r"Set-Location -LiteralPath 'C:\Code\Demo'; & 'C:\Tools\codex.exe'"]},
+        ]
+        main._attach_session_counts(rows, processes)
+        self.assertEqual((rows[0]["claudeSessions"], rows[0]["codexSessions"]), (1, 1))
+        self.assertEqual((rows[1]["claudeSessions"], rows[1]["codexSessions"]), (0, 0))
 
 
 class FacadeFailureTests(unittest.TestCase):

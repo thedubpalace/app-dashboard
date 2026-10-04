@@ -828,6 +828,30 @@
       }
     }
 
+    async function auxiliaryAction(b, url) {
+      const scope = b.closest(".codex-control");
+      const buttons = scope ? [...scope.querySelectorAll("button")] : [b];
+      const disabled = buttons.map(button => button.disabled);
+      buttons.forEach(button => { button.disabled = true; });
+      const original = b.innerHTML;
+      b.innerHTML = '<svg class="spinner" width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="14 8" stroke-linecap="round"/></svg>';
+      try {
+        const intent = `${url}:interactive`;
+        const res = await fetch(url, { method:"POST", headers:mutationHeaders(undefined, intent) });
+        let data = {};
+        try { data = await res.json(); } catch (_) {}
+        const ok = res.ok && data.ok !== false;
+        if (res.status === 401) document.getElementById("authGate").classList.remove("hidden");
+        toast(data.message || data.error || (ok ? "Opened" : "Action failed"), ok);
+      } catch (error) {
+        toast(error.message || "Interactive tool action failed", false);
+      } finally {
+        b.innerHTML = original;
+        buttons.forEach((button, index) => { button.disabled = disabled[index]; });
+        setTimeout(() => refreshAll(true), 600);
+      }
+    }
+
     // ---------- detail disclosure ----------
     // Rows render one compact line; cells[1..] are detail and stay collapsed
     // until this row is expanded or the header toggle reveals every row.
@@ -1047,18 +1071,18 @@
         if (controlRunning && hasCapability(a, "restart")) btns.push(btn("Restart", "restart", (b) => action(b, `/api/apps/${enc}/restart`, undefined, 5000, true, "Queued…")));
       }
       if (a.localPath) {
-        const openClaude = btn("Claude", "shell", (b) => action(b, `/api/apps/${enc}/shell`));
-        openClaude.disabled = true; openClaude.dataset.locked = "1"; openClaude.title = "Disabled until a dedicated adapter exists";
+        const openClaude = btn("Claude", "shell", (b) => auxiliaryAction(b, `/api/apps/${enc}/shell`));
+        openClaude.title = `Open Claude remote control for ${a.name}`;
         if (n > 0) {
-          const endClaude = btn(`End ×${n}`, "stop", (b) => action(b, `/api/apps/${enc}/claude-sessions/kill-all`));
+          const endClaude = btn(`End ×${n}`, "stop", (b) => auxiliaryAction(b, `/api/apps/${enc}/claude-sessions/kill-all`));
           btns.push(btnGroup("Claude controls", [openClaude, endClaude]));
         } else {
           btns.push(openClaude);
         }
-        const openCodex = btn("Codex", "shell", (b) => action(b, `/api/apps/${enc}/codex`));
-        openCodex.disabled = true; openCodex.dataset.locked = "1"; openCodex.title = "Disabled until a dedicated adapter exists";
+        const openCodex = btn("Codex", "shell", (b) => auxiliaryAction(b, `/api/apps/${enc}/codex`));
+        openCodex.title = `Open Codex for ${a.name}`;
         if (codexSessions > 0) {
-          const endCodex = btn(`End ×${codexSessions}`, "stop", (b) => action(b, `/api/apps/${enc}/codex-sessions/kill-all`));
+          const endCodex = btn(`End ×${codexSessions}`, "stop", (b) => auxiliaryAction(b, `/api/apps/${enc}/codex-sessions/kill-all`));
           btns.push(btnGroup("Codex controls", [openCodex, endCodex]));
         } else {
           btns.push(openCodex);

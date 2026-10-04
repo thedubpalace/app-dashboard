@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 import uuid
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
+import psutil
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -272,7 +274,9 @@ async def set_docker_filter(request: Request, payload: dict[str, Any]) -> JSONRe
 
 
 def _apps() -> list[dict[str, Any]]:
-    items = veda_apps.list_apps(veda_apps.snapshot_processes())
+    processes = veda_apps.snapshot_processes()
+    items = veda_apps.list_apps(processes)
+    _attach_session_counts(items, processes)
     index, urls = _surface_index(_control_snapshot()), nginx_proxy.public_urls()
     for item in items:
         _decorate(item, index.get(("app", _norm(item.get("name")))))
@@ -283,6 +287,106 @@ def _apps() -> list[dict[str, Any]]:
             except (TypeError, ValueError):
                 pass
     return items
+
+
+def _find_tool_sessions(tool: str, app_path: str | None = None, processes: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Find only dashboard-shaped interactive terminals for an exact project path."""
+    if tool not in {"claude", "codex"}:
+        return []
+    target = _norm(app_path) if app_path else None
+    rows = processes if processes is not None else veda_apps.snapshot_processes()
+    sessions: list[dict[str, Any]] = []
+    path_pattern = re.compile(r"Set-Location(?:\s+-LiteralPath)?\s+'((?:''|[^'])+)'", re.IGNORECASE)
+    for process in rows:
+        name = str(process.get("name") or "").lower().removesuffix(".exe")
+        if name not in {"powershell", "pwsh"}:
+            continue
+        command = " ".join(str(part) for part in process.get("cmdline") or [])
+        lowered = command.lower()
+        if tool == "claude" and not ("claude" in lowered and "remote-control" in lowered):
+            continue
+        if tool == "codex" and not any(suffix in lowered for suffix in ("codex.exe", "codex.cmd", "codex.bat")):
+            continue
+        match = path_pattern.search(command)
+        path = match.group(1).replace("''", "'") if match else None
+        if not path or (target and _norm(path) != target):
+            continue
+        sessions.append({"pid": int(process["pid"]), "path": path})
+    return sessions
+
+
+def _attach_session_counts(items: list[dict[str, Any]], processes: list[dict[str, Any]]) -> None:
+    for field, tool in (("claudeSessions", "claude"), ("codexSessions", "codex")):
+        counts: dict[str, int] = {}
+        for session in _find_tool_sessions(tool, processes=processes):
+            path = _norm(session.get("path"))
+            counts[path] = counts.get(path, 0) + 1
+        for item in items:
+            item[field] = counts.get(_norm(item.get("localPath")), 0)
+
+
+def _registered_project(name: str) -> tuple[dict[str, Any] | None, Path | None, JSONResponse | None]:
+    entry = veda_apps.get_app(name)
+    if not entry:
+        return None, None, JSONResponse({"ok": False, "error": f"unknown app: {name}"}, status_code=404)
+    raw_path = entry.get("localPath")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return entry, None, JSONResponse({"ok": False, "error": "localPath not configured"}, status_code=400)
+    path = Path(raw_path)
+    if not path.is_absolute() or not path.is_dir():
+        return entry, None, JSONResponse({"ok": False, "error": "localPath not found"}, status_code=400)
+    return entry, path.resolve(), None
+
+
+def _find_codex_executable() -> str | None:
+    from_path = shutil.which("codex.exe") or shutil.which("codex")
+    if from_path:
+        return str(Path(from_path).resolve())
+    install_dir = Path.home() / "AppData" / "Local" / "OpenAI" / "Codex" / "bin"
+    try:
+        candidates = [candidate for candidate in install_dir.glob("*/codex.exe") if candidate.is_file()]
+    except OSError:
+        return None
+    return str(max(candidates, key=lambda candidate: candidate.stat().st_mtime).resolve()) if candidates else None
+
+
+def _launch_tool(tool: str, project_path: Path) -> None:
+    safe_path = str(project_path).replace("'", "''")
+    if tool == "claude":
+        command = f"Set-Location -LiteralPath '{safe_path}'; claude remote-control"
+    elif tool == "codex":
+        executable = _find_codex_executable()
+        if not executable:
+            raise FileNotFoundError("Codex CLI was not found. Install or update the Codex desktop app.")
+        safe_executable = executable.replace("'", "''")
+        command = f"$env:HOME = $env:USERPROFILE; Set-Location -LiteralPath '{safe_path}'; & '{safe_executable}'"
+    else:
+        raise ValueError("unsupported tool")
+    subprocess.Popen(
+        ["powershell", "-NoExit", "-Command", command],
+        creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+        shell=False,
+    )
+
+
+def _terminate_tool_sessions(tool: str, project_path: Path) -> int:
+    killed = 0
+    for session in _find_tool_sessions(tool, app_path=str(project_path)):
+        try:
+            root = psutil.Process(session["pid"])
+            live = [{"pid": root.pid, "name": root.name(), "cmdline": root.cmdline()}]
+            if not _find_tool_sessions(tool, app_path=str(project_path), processes=live):
+                continue
+            tree = root.children(recursive=True) + [root]
+            for process in tree:
+                process.terminate()
+            _, alive = psutil.wait_procs(tree, timeout=2)
+            for process in alive:
+                process.kill()
+            killed += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return killed
 
 
 def _docker() -> dict[str, Any]:
@@ -417,7 +521,21 @@ async def app_mode(name: str, request: Request, payload: dict[str, Any]) -> JSON
 @app.post("/api/apps/{name}/{action}")
 async def app_lifecycle(name: str, action: str, request: Request) -> JSONResponse:
     if action in {"shell", "codex"}:
-        return _unsupported()
+        _, auth_error = _session_or_error(request)
+        if auth_error:
+            return auth_error
+        _, project_path, project_error = _registered_project(name)
+        if project_error:
+            return project_error
+        tool = "claude" if action == "shell" else "codex"
+        try:
+            _launch_tool(tool, project_path)
+        except FileNotFoundError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+        except (OSError, ValueError) as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        label = "Claude remote control" if tool == "claude" else "Codex"
+        return JSONResponse({"ok": True, "message": f"opened {label} for {name}"})
     if action not in {"start", "stop", "restart"}:
         return JSONResponse({"ok": False, "error": "unsupported action"}, status_code=404)
     return _submit(request, _resource_for("app", name), action)
@@ -444,11 +562,20 @@ async def unsupported_auxiliary() -> JSONResponse:
     return _unsupported()
 
 
-@app.post("/api/apps/{name}/claude-sessions/kill-all")
-@app.post("/api/apps/{name}/codex-sessions/kill-all")
-async def unsupported_session_kill(name: str) -> JSONResponse:
-    del name
-    return _unsupported()
+@app.post("/api/apps/{name}/{tool}-sessions/kill-all")
+async def kill_tool_sessions(name: str, tool: str, request: Request) -> JSONResponse:
+    if tool not in {"claude", "codex"}:
+        return JSONResponse({"ok": False, "error": "unsupported tool"}, status_code=404)
+    _, auth_error = _session_or_error(request)
+    if auth_error:
+        return auth_error
+    _, project_path, project_error = _registered_project(name)
+    if project_error:
+        return project_error
+    killed = _terminate_tool_sessions(tool, project_path)
+    label = "Claude" if tool == "claude" else "Codex"
+    message = f"terminated {killed} {label} session(s)" if killed else f"no {label} sessions found"
+    return JSONResponse({"ok": True, "killed": killed, "message": message})
 
 
 def _tailscale_status() -> dict[str, Any]:
