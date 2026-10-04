@@ -317,6 +317,17 @@ class FacadeFailureTests(unittest.TestCase):
         self.assertEqual(result["status"], "running")
         self.assertNotIn("statusSource", result)
 
+    def test_dashboard_self_status_uses_serving_process_not_public_hairpin_probe(self):
+        apps = [{"name": "veda-dashboard", "status": "stopped", "localPath": str(main.BASE_DIR), "healthCheck": {"type": "http", "target": "https://bridgenbrain.duckdns.org/api/control/readiness"}}]
+        with patch.object(main.veda_apps, "snapshot_processes", return_value=[]), \
+             patch.object(main.veda_apps, "list_apps", return_value=apps), \
+             patch.object(main.docker_service, "list_containers", return_value={"available": True, "containers": []}), \
+             patch.object(main.client, "resources", return_value={"resources": [], "registrySync": {"status": "ready"}}), \
+             patch.object(main.nginx_proxy, "public_urls", return_value={}):
+            result = main._apps()[0]
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["statusSource"], "self")
+
     def test_unowned_process_conflict_is_read_only_and_never_killed_by_port(self):
         item = {"name": "skill-finder", "status": "running"}
         resource = {"id": "process.skill-finder", "adapter": "process", "state": "Stopped", "capabilities": [{"operation": "stop", "allowed": True}]}

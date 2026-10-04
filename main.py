@@ -296,6 +296,14 @@ def _apps() -> list[dict[str, Any]]:
             item["statusSource"] = "docker"
             if container and container.get("statusText"):
                 item["containerStatusText"] = container["statusText"]
+    # Serving this inventory request proves this exact application process is
+    # running; do not probe its own public hostname, which can fail on NAT
+    # loopback even while external clients are healthy.
+    dashboard_path = _norm(str(BASE_DIR))
+    for item in items:
+        if _norm(str(item.get("localPath") or "")) == dashboard_path:
+            item["status"] = "running"
+            item["statusSource"] = "self"
     _attach_session_counts(items, processes)
     index, urls = _surface_index(_control_snapshot()), nginx_proxy.public_urls()
     for item in items:
