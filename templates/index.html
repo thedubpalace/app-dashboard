@@ -787,7 +787,10 @@
     // action() — pendingLabel keeps button in "Restarting…" state during postDelay
     async function action(b, url, body, postDelay = 600, silentRefresh = false, pendingLabel = null) {
       const verb = (url.split("/").pop() || "action").replace("mode", "switch mode");
-      if (["stop", "restart", "mode"].some(x => url.endsWith("/" + x)) && !confirm(`Queue ${verb} through Temporal?`)) return;
+      let confirmation = ["stop", "restart", "mode"].some(x => url.endsWith("/" + x)) ? `Queue ${verb} through Temporal?` : "";
+      if (url.startsWith("/api/tailscale/") && verb === "stop") confirmation = "Disconnect Tailscale through Temporal?\n\nThis can end the remote session and make this Dashboard unreachable until local access restores it.";
+      if (url.startsWith("/api/tailscale/") && verb === "restart") confirmation = "Restart Tailscale through Temporal?\n\nConnectivity may be interrupted briefly.";
+      if (confirmation && !confirm(confirmation)) return;
       const resourceRow = b.closest("[data-resource-id]");
       const resourceId = resourceRow?.dataset.resourceId;
       const current = resourceId ? actionByResource.get(resourceId) : null;
@@ -1400,11 +1403,12 @@
       const connected = !!(s && s.connected);
       const cells = [leadLine("Tailscale", connected)];
       if (connected && s.ip) cells.push(monoLine(s.ip, true));
-      const toggleBtn = btn(connected ? "Disconnect" : "Connect", connected ? "stop" : "start", (b) => toggleTailscale(b));
-      toggleBtn.dataset.connected = connected ? "1" : "0";
-      toggleBtn.disabled = true;
-      toggleBtn.title = "Disabled until a dedicated allowlisted adapter exists";
-      body.appendChild(row(cells, [toggleBtn], "tailscale"));
+      if (s && controlHint(s)) cells.push(descLine(controlHint(s)));
+      const buttons = [];
+      if (!connected && hasCapability(s || {}, "start")) buttons.push(btn("Connect", "start", (b) => action(b, "/api/tailscale/start")));
+      if (connected && hasCapability(s || {}, "stop")) buttons.push(btn("Disconnect", "stop", (b) => action(b, "/api/tailscale/stop")));
+      if (connected && hasCapability(s || {}, "restart")) buttons.push(btn("Restart", "restart", (b) => action(b, "/api/tailscale/restart")));
+      body.appendChild(controlledRow(cells, buttons, "tailscale", s));
     }
 
     async function loadTailscale() {
@@ -1414,10 +1418,6 @@
       } catch (e) {
         renderTailscale({ connected: false, ip: null });
       }
-    }
-
-    async function toggleTailscale(b) {
-      b.disabled = true; toast("Tailscale mutation is disabled until a dedicated adapter exists", false);
     }
 
     // Escape closes Docker modal

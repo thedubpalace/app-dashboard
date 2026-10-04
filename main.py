@@ -77,9 +77,9 @@ def _apply_docker_filter(items: list[dict[str, Any]], filters: list[str]) -> lis
     return items if not terms else [item for item in items if any(term in str(item.get("name", "")).lower() for term in terms)]
 
 
-def _control_snapshot() -> dict[str, Any]:
+def _control_snapshot(*, role: str = "operator") -> dict[str, Any]:
     try:
-        return client.resources(actor="dashboard-read")
+        return client.resources(actor="dashboard-read", role=role)
     except TemporalClientError as exc:
         return {"resources": [], "registrySync": {"status": "unavailable", "error": str(exc)}}
 
@@ -184,7 +184,7 @@ def _timestamp(value: Any) -> float:
         return 0.0
 
 
-def _submit(request: Request, resource: dict[str, Any] | None, action: str, *, target_mode: str | None = None) -> JSONResponse:
+def _submit(request: Request, resource: dict[str, Any] | None, action: str, *, target_mode: str | None = None, role: str = "operator") -> JSONResponse:
     session, error = _session_or_error(request)
     if error:
         return error
@@ -195,7 +195,7 @@ def _submit(request: Request, resource: dict[str, Any] | None, action: str, *, t
     if not re.fullmatch(r"[A-Za-z0-9_-]{12,128}", key):
         return JSONResponse({"ok": False, "error": "invalid Idempotency-Key"}, status_code=400)
     try:
-        result = client.submit(str(resource["id"]), action, key, actor=session["username"], target_mode=target_mode)
+        result = client.submit(str(resource["id"]), action, key, actor=session["username"], target_mode=target_mode, role=role)
         projection_source = {"resourceId": str(resource["id"]), "operation": action, "updatedAt": datetime.now(timezone.utc).isoformat(), **result}
         projection = _project_workflow(projection_source)
         _submission_overrides[str(resource["id"])] = projection
@@ -389,6 +389,25 @@ def _terminate_tool_sessions(tool: str, project_path: Path) -> int:
     return killed
 
 
+def _interactive_event_key(request: Request, tool: str, verb: str, phase: str) -> str:
+    supplied = str(request.headers.get("idempotency-key") or "")
+    if supplied and not re.fullmatch(r"[A-Za-z0-9_-]{12,96}", supplied):
+        raise ValueError("invalid Idempotency-Key")
+    base = supplied or f"interactive_{uuid.uuid4().hex}"
+    return f"{base}_{tool}_{verb}_{phase}"[:128]
+
+
+def _record_interactive_event(request: Request, actor: str, tool: str, verb: str, target: str, result: str, phase: str, *, session_count: int | None = None) -> JSONResponse | None:
+    try:
+        key = _interactive_event_key(request, tool, verb, phase)
+        client.record_interactive_event(f"{tool}.{verb}", target, result, key, actor=actor, session_count=session_count)
+        return None
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except TemporalClientError:
+        return JSONResponse({"ok": False, "error": "Interactive action audit is unavailable; no action was started"}, status_code=503)
+
+
 def _docker() -> dict[str, Any]:
     result = docker_service.list_containers()
     filters = _load_settings().get("docker", {}).get("filter", [])
@@ -521,19 +540,27 @@ async def app_mode(name: str, request: Request, payload: dict[str, Any]) -> JSON
 @app.post("/api/apps/{name}/{action}")
 async def app_lifecycle(name: str, action: str, request: Request) -> JSONResponse:
     if action in {"shell", "codex"}:
-        _, auth_error = _session_or_error(request)
+        session, auth_error = _session_or_error(request)
         if auth_error:
             return auth_error
         _, project_path, project_error = _registered_project(name)
         if project_error:
             return project_error
         tool = "claude" if action == "shell" else "codex"
+        audit_error = _record_interactive_event(request, session["username"], tool, "open", name, "Requested", "requested")
+        if audit_error:
+            return audit_error
         try:
             _launch_tool(tool, project_path)
         except FileNotFoundError as exc:
+            _record_interactive_event(request, session["username"], tool, "open", name, "Failed", "result")
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
         except (OSError, ValueError) as exc:
+            _record_interactive_event(request, session["username"], tool, "open", name, "Failed", "result")
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        completion_error = _record_interactive_event(request, session["username"], tool, "open", name, "Succeeded", "result")
+        if completion_error:
+            return JSONResponse({"ok": True, "auditRecorded": False, "warning": "Interactive tool opened; completion audit is unavailable"})
         label = "Claude remote control" if tool == "claude" else "Codex"
         return JSONResponse({"ok": True, "message": f"opened {label} for {name}"})
     if action not in {"start", "stop", "restart"}:
@@ -557,7 +584,6 @@ async def vmware_lifecycle(action: str, request: Request, payload: dict[str, Any
 
 @app.post("/api/docker/fix")
 @app.post("/api/system/restart")
-@app.post("/api/tailscale/toggle")
 async def unsupported_auxiliary() -> JSONResponse:
     return _unsupported()
 
@@ -566,13 +592,20 @@ async def unsupported_auxiliary() -> JSONResponse:
 async def kill_tool_sessions(name: str, tool: str, request: Request) -> JSONResponse:
     if tool not in {"claude", "codex"}:
         return JSONResponse({"ok": False, "error": "unsupported tool"}, status_code=404)
-    _, auth_error = _session_or_error(request)
+    session, auth_error = _session_or_error(request)
     if auth_error:
         return auth_error
     _, project_path, project_error = _registered_project(name)
     if project_error:
         return project_error
+    audit_error = _record_interactive_event(request, session["username"], tool, "end", name, "Requested", "requested")
+    if audit_error:
+        return audit_error
     killed = _terminate_tool_sessions(tool, project_path)
+    result = "Succeeded" if killed else "No-op"
+    completion_error = _record_interactive_event(request, session["username"], tool, "end", name, result, "result", session_count=killed)
+    if completion_error:
+        return JSONResponse({"ok": True, "killed": killed, "auditRecorded": False, "warning": "Interactive sessions were handled; completion audit is unavailable"})
     label = "Claude" if tool == "claude" else "Codex"
     message = f"terminated {killed} {label} session(s)" if killed else f"no {label} sessions found"
     return JSONResponse({"ok": True, "killed": killed, "message": message})
@@ -590,4 +623,18 @@ def _tailscale_status() -> dict[str, Any]:
 
 @app.get("/api/tailscale/status")
 async def tailscale_status() -> dict[str, Any]:
-    return await asyncio.get_running_loop().run_in_executor(None, _tailscale_status)
+    def snapshot() -> dict[str, Any]:
+        item = _tailscale_status()
+        item["status"] = "running" if item["connected"] else "stopped"
+        resource = _surface_index(_control_snapshot(role="admin")).get(("tailscale", "local"))
+        _decorate(item, resource)
+        return item
+    return await asyncio.get_running_loop().run_in_executor(None, snapshot)
+
+
+@app.post("/api/tailscale/{action}")
+async def tailscale_lifecycle(action: str, request: Request) -> JSONResponse:
+    if action not in {"start", "stop", "restart"}:
+        return JSONResponse({"ok": False, "error": "unsupported action"}, status_code=404)
+    resource = _surface_index(_control_snapshot(role="admin")).get(("tailscale", "local"))
+    return _submit(request, resource, action, role="admin")

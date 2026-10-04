@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from services.dashboard_auth import create_session, read_session
-from services.temporal_client import TemporalOrchestratorClient
+from services.temporal_client import TemporalClientError, TemporalOrchestratorClient
 import main
 
 
@@ -88,11 +88,18 @@ class SourceBoundaryTests(unittest.TestCase):
         for forbidden in ("docker_service.start(", "docker_service.stop(", "docker_service.restart(", "vmware_service.start_vm(", "vmware_service.stop_vm("):
             self.assertNotIn(forbidden, source)
 
-    def test_privileged_auxiliary_actions_remain_disabled(self):
+    def test_unimplemented_privileged_auxiliary_actions_remain_disabled(self):
         source = Path("main.py").read_text(encoding="utf-8")
         self.assertIn("status_code=501", source)
         self.assertIn('/api/system/restart', source)
-        self.assertIn('/api/tailscale/toggle', source)
+        self.assertIn('/api/docker/fix', source)
+
+    def test_tailscale_controls_use_temporal_lifecycle_routes(self):
+        source = Path("templates/index.html").read_text(encoding="utf-8")
+        for operation in ("start", "stop", "restart"):
+            self.assertIn(f'"/api/tailscale/{operation}"', source)
+        self.assertNotIn("Tailscale mutation is disabled", source)
+        self.assertNotIn("/api/tailscale/toggle", Path("main.py").read_text(encoding="utf-8"))
 
     def test_claude_and_codex_buttons_use_dedicated_interactive_action(self):
         source = Path("templates/index.html").read_text(encoding="utf-8")
@@ -115,6 +122,7 @@ class InteractiveToolTests(unittest.TestCase):
     def test_claude_launch_uses_registered_project_path_and_fixed_command(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret"}), \
              patch.object(main.veda_apps, "get_app", return_value={"name": "demo", "localPath": folder}), \
+             patch.object(main.client, "record_interactive_event", return_value={"ok": True}) as audit, \
              patch.object(main.subprocess, "Popen") as popen:
             response = asyncio.run(main.app_lifecycle("demo", "shell", self._session()))
         self.assertEqual(response.status_code, 200)
@@ -122,11 +130,34 @@ class InteractiveToolTests(unittest.TestCase):
         self.assertEqual(args[:3], ["powershell", "-NoExit", "-Command"])
         self.assertEqual(args[3], f"Set-Location -LiteralPath '{str(Path(folder).resolve())}'; claude remote-control")
         self.assertFalse(popen.call_args.kwargs["shell"])
+        self.assertEqual([call.args[:3] for call in audit.call_args_list], [("claude.open", "demo", "Requested"), ("claude.open", "demo", "Succeeded")])
+        self.assertTrue(all("claude remote-control" not in str(call) for call in audit.call_args_list))
+
+    def test_interactive_launch_is_not_started_when_request_audit_fails(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret"}), \
+             patch.object(main.veda_apps, "get_app", return_value={"name": "demo", "localPath": folder}), \
+             patch.object(main.client, "record_interactive_event", side_effect=TemporalClientError("audit offline")), \
+             patch.object(main.subprocess, "Popen") as popen:
+            response = asyncio.run(main.app_lifecycle("demo", "shell", self._session()))
+        self.assertEqual(response.status_code, 503)
+        popen.assert_not_called()
+
+    def test_interactive_launch_reports_success_if_completion_audit_fails(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret"}), \
+             patch.object(main.veda_apps, "get_app", return_value={"name": "demo", "localPath": folder}), \
+             patch.object(main.client, "record_interactive_event", side_effect=[{"ok": True}, TemporalClientError("audit offline")]), \
+             patch.object(main.subprocess, "Popen") as popen:
+            response = asyncio.run(main.app_lifecycle("demo", "shell", self._session()))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(json.loads(response.body)["ok"])
+        self.assertFalse(json.loads(response.body)["auditRecorded"])
+        popen.assert_called_once()
 
     def test_codex_launch_uses_registered_project_path_and_resolved_executable(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret"}), \
              patch.object(main.veda_apps, "get_app", return_value={"name": "demo", "localPath": folder}), \
              patch.object(main, "_find_codex_executable", return_value=r"C:\Tools\codex.exe"), \
+             patch.object(main.client, "record_interactive_event", return_value={"ok": True}), \
              patch.object(main.subprocess, "Popen") as popen:
             response = asyncio.run(main.app_lifecycle("demo", "codex", self._session()))
         self.assertEqual(response.status_code, 200)
@@ -151,6 +182,7 @@ class InteractiveToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret"}), \
              patch.object(main.veda_apps, "get_app", return_value={"name": "demo", "localPath": folder}), \
              patch.object(main, "_find_tool_sessions", return_value=[{"pid": 42, "path": folder}]) as finder, \
+             patch.object(main.client, "record_interactive_event", return_value={"ok": True}) as audit, \
              patch.object(main.psutil, "Process", return_value=process), patch.object(main.psutil, "wait_procs", return_value=([process], [])):
             response = asyncio.run(main.kill_tool_sessions("demo", "claude", self._session()))
         self.assertEqual(response.status_code, 200)
@@ -159,6 +191,8 @@ class InteractiveToolTests(unittest.TestCase):
         self.assertEqual(finder.call_args_list[1].kwargs["app_path"], str(Path(folder).resolve()))
         self.assertEqual(finder.call_args_list[1].kwargs["processes"][0]["pid"], 42)
         process.terminate.assert_called_once_with()
+        self.assertEqual([call.args[:3] for call in audit.call_args_list], [("claude.end", "demo", "Requested"), ("claude.end", "demo", "Succeeded")])
+        self.assertEqual(audit.call_args_list[1].kwargs["session_count"], 1)
 
     def test_interactive_mutations_require_session_and_csrf(self):
         response = asyncio.run(main.app_lifecycle("demo", "shell", self._request()))
@@ -214,7 +248,7 @@ class FacadeFailureTests(unittest.TestCase):
                 self.assertEqual(payload["currentAction"]["resourceId"], "docker.demo")
                 self.assertEqual(payload["currentAction"]["operation"], "start")
                 self.assertIn("/temporal-ui/namespaces/", payload["currentAction"]["temporalUrl"])
-                submit.assert_called_once_with("docker.demo", "start", "intent_test_123456", actor="alice", target_mode=None)
+                submit.assert_called_once_with("docker.demo", "start", "intent_test_123456", actor="alice", target_mode=None, role="operator")
                 old = {"resourceId": "docker.demo", "operation": "stop", "status": "Succeeded", "workflowId": "old", "updatedAt": "2026-10-03T09:00:00Z"}
                 with patch.object(main.client, "workflows", return_value=[old]):
                     polled = asyncio.run(main.current_actions(self._request(cookie)))
@@ -303,6 +337,24 @@ class FacadeFailureTests(unittest.TestCase):
             result = asyncio.run(main.readiness())
         self.assertFalse(result["ok"])
         self.assertIn("worker task queue is offline", result["error"])
+
+    def test_tailscale_status_is_direct_read_and_lifecycle_submits_admin_workflow(self):
+        resource = {"id": "tailscale.local", "adapter": "tailscale", "revision": 1, "state": "Running", "health": "Connected", "surfaceRefs": [{"surface": "tailscale", "key": "local"}], "capabilities": [{"operation": "stop", "allowed": True}, {"operation": "restart", "allowed": True}]}
+        snapshot = {"resources": [resource], "registrySync": {"status": "ready"}, "readiness": {"temporal": True, "worker": True, "docker": True}}
+        with patch.object(main, "_tailscale_status", return_value={"connected": True, "ip": "100.64.0.1", "hostname": "mini"}), \
+             patch.object(main.client, "resources", return_value=snapshot) as resources, patch.object(main.client, "submit") as submit:
+            status = asyncio.run(main.tailscale_status())
+        self.assertTrue(status["connected"])
+        self.assertEqual(status["resourceId"], "tailscale.local")
+        resources.assert_called_once_with(actor="dashboard-read", role="admin")
+        submit.assert_not_called()
+
+        with patch.dict(os.environ, {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret"}):
+            cookie, csrf = create_session("alice")
+            with patch.object(main, "_control_snapshot", return_value=snapshot), patch.object(main.client, "submit", return_value={"ok": True, "workflowId": "tailscale-stop", "status": "Queued"}) as submit:
+                response = asyncio.run(main.tailscale_lifecycle("stop", self._request(cookie, csrf)))
+        self.assertEqual(response.status_code, 202)
+        submit.assert_called_once_with("tailscale.local", "stop", "intent_test_123456", actor="alice", target_mode=None, role="admin")
 
 
 class CompactActionProjectionTests(unittest.TestCase):

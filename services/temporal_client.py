@@ -29,20 +29,22 @@ class TemporalOrchestratorClient:
         self.actor_secret = os.getenv("DASHBOARD_ACTOR_SECRET", "")
         self.timeout = float(os.getenv("TEMPORAL_ORCHESTRATOR_TIMEOUT", "10"))
 
-    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None, *, actor: str = "dashboard") -> Any:
+    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None, *, actor: str = "dashboard", role: str = "operator") -> Any:
         if not self.token or not self.actor_secret:
             raise TemporalClientError("Temporal machine credentials are not configured", 503)
         body = json.dumps(payload, separators=(",", ":")).encode() if payload is not None else b""
         timestamp = str(int(time.time() * 1000))
         body_hash = hashlib.sha256(body).hexdigest()
-        signed = "\n".join((method, path, timestamp, actor, "operator", body_hash)).encode()
+        if role not in {"operator", "admin"}:
+            raise TemporalClientError("invalid machine role", 500)
+        signed = "\n".join((method, path, timestamp, actor, role, body_hash)).encode()
         signature = hmac.new(self.actor_secret.encode(), signed, hashlib.sha256).hexdigest()
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
             "X-Veda-Client": "veda-dashboard",
             "X-Veda-Actor": actor,
-            "X-Veda-Role": "operator",
+            "X-Veda-Role": role,
             "X-Veda-Timestamp": timestamp,
             "X-Veda-Signature": signature,
         }
@@ -62,8 +64,8 @@ class TemporalOrchestratorClient:
     def sync_registry(self, *, actor: str) -> dict[str, Any]:
         return self._request("POST", "/api/machine/registry/sync", {}, actor=actor)
 
-    def resources(self, *, actor: str = "dashboard") -> dict[str, Any]:
-        return self._request("GET", "/api/machine/resources", actor=actor)
+    def resources(self, *, actor: str = "dashboard", role: str = "operator") -> dict[str, Any]:
+        return self._request("GET", "/api/machine/resources", actor=actor, role=role)
 
     def workflows(self, *, actor: str = "dashboard") -> dict[str, Any]:
         return self._request("GET", "/api/machine/workflows", actor=actor)
@@ -71,11 +73,17 @@ class TemporalOrchestratorClient:
     def audit(self, *, actor: str = "dashboard") -> dict[str, Any]:
         return self._request("GET", "/api/machine/audit", actor=actor)
 
-    def submit(self, resource_id: str, action: str, idempotency_key: str, *, actor: str, target_mode: str | None = None) -> dict[str, Any]:
+    def submit(self, resource_id: str, action: str, idempotency_key: str, *, actor: str, target_mode: str | None = None, role: str = "operator") -> dict[str, Any]:
         payload: dict[str, Any] = {"resourceId": resource_id, "operation": action, "idempotencyKey": idempotency_key}
         if target_mode:
             payload["targetMode"] = target_mode
-        return self._request("POST", "/api/machine/operations", payload, actor=actor)
+        return self._request("POST", "/api/machine/operations", payload, actor=actor, role=role)
+
+    def record_interactive_event(self, action: str, target: str, result: str, idempotency_key: str, *, actor: str, session_count: int | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"action": action, "target": target, "result": result, "idempotencyKey": idempotency_key}
+        if session_count is not None:
+            payload["sessionCount"] = session_count
+        return self._request("POST", "/api/machine/events", payload, actor=actor)
 
 
 client = TemporalOrchestratorClient()
