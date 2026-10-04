@@ -50,7 +50,7 @@ test("stale active workflow and unknown control state are explicit", () => {
 
   const unknown = merge({ status: "running", controlStatus: "Unknown" }, null, NOW);
   assert.equal(unknown.primary.label, "Running");
-  assert.equal(unknown.secondary, "Temporal: Unknown");
+  assert.equal(unknown.secondary, "");
 });
 
 test("matching direct and projected states have no duplicate secondary label", () => {

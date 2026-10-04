@@ -287,6 +287,36 @@ class FacadeFailureTests(unittest.TestCase):
         self.assertEqual(rows["html-hub"]["resourceId"], "process.html-hub")
         self.assertEqual({item["operation"] for item in rows["html-hub"]["capabilities"]}, {"stop", "restart"})
 
+    def test_docker_backed_app_status_uses_exact_container_state_not_public_probe(self):
+        apps = [
+            {"name": "temporal-service-orchestrator", "status": "stopped", "containerName": "temporal-service-orchestrator-app-1", "healthCheck": {"type": "http", "target": "https://pulsenprompt.duckdns.org/temporal-ops/health"}},
+            {"name": "matchday", "status": "running", "containerName": "matchday", "healthCheck": {"type": "http", "target": "http://localhost:5001"}},
+        ]
+        docker_snapshot = {"available": True, "containers": [
+            {"name": "temporal-service-orchestrator-app-1", "status": "running", "statusText": "Up 2 hours (healthy)"},
+        ]}
+        with patch.object(main.veda_apps, "snapshot_processes", return_value=[]), \
+             patch.object(main.veda_apps, "list_apps", return_value=apps), \
+             patch.object(main.docker_service, "list_containers", return_value=docker_snapshot), \
+             patch.object(main.client, "resources", return_value={"resources": [], "registrySync": {"status": "ready"}}), \
+             patch.object(main.nginx_proxy, "public_urls", return_value={}):
+            rows = {row["name"]: row for row in main._apps()}
+        self.assertEqual(rows["temporal-service-orchestrator"]["status"], "running")
+        self.assertEqual(rows["temporal-service-orchestrator"]["statusSource"], "docker")
+        self.assertEqual(rows["temporal-service-orchestrator"]["containerStatusText"], "Up 2 hours (healthy)")
+        self.assertEqual(rows["matchday"]["status"], "stopped")
+
+    def test_docker_unavailable_keeps_registry_health_status(self):
+        apps = [{"name": "container-app", "status": "running", "containerName": "container-app"}]
+        with patch.object(main.veda_apps, "snapshot_processes", return_value=[]), \
+             patch.object(main.veda_apps, "list_apps", return_value=apps), \
+             patch.object(main.docker_service, "list_containers", return_value={"available": False, "containers": []}), \
+             patch.object(main.client, "resources", return_value={"resources": [], "registrySync": {"status": "ready"}}), \
+             patch.object(main.nginx_proxy, "public_urls", return_value={}):
+            result = main._apps()[0]
+        self.assertEqual(result["status"], "running")
+        self.assertNotIn("statusSource", result)
+
     def test_unowned_process_conflict_is_read_only_and_never_killed_by_port(self):
         item = {"name": "skill-finder", "status": "running"}
         resource = {"id": "process.skill-finder", "adapter": "process", "state": "Stopped", "capabilities": [{"operation": "stop", "allowed": True}]}

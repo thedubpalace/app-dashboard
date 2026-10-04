@@ -276,6 +276,26 @@ async def set_docker_filter(request: Request, payload: dict[str, Any]) -> JSONRe
 def _apps() -> list[dict[str, Any]]:
     processes = veda_apps.snapshot_processes()
     items = veda_apps.list_apps(processes)
+    # A registry app backed by a named Docker container must use Docker's
+    # container state as its lifecycle status. Its HTTP probe may point at a
+    # public proxy (which can fail from the host because of NAT loopback) or
+    # report application health rather than whether the container is running.
+    docker_snapshot = docker_service.list_containers()
+    if docker_snapshot.get("available") and not docker_snapshot.get("error"):
+        containers = {
+            _norm(str(container.get("name"))): container
+            for container in docker_snapshot.get("containers", [])
+            if container.get("name")
+        }
+        for item in items:
+            container_name = item.get("containerName")
+            if not container_name:
+                continue
+            container = containers.get(_norm(str(container_name)))
+            item["status"] = container.get("status", "stopped") if container else "stopped"
+            item["statusSource"] = "docker"
+            if container and container.get("statusText"):
+                item["containerStatusText"] = container["statusText"]
     _attach_session_counts(items, processes)
     index, urls = _surface_index(_control_snapshot()), nginx_proxy.public_urls()
     for item in items:

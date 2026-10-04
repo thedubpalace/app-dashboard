@@ -72,9 +72,10 @@
     const primary = observedStatus(item);
     const temporal = temporalStatus(item, action, nowMs);
     const matches = Boolean(temporal && temporal.key === primary.key);
+    const hasProjectedStatus = Boolean(temporal && (action || temporal.key !== "unknown"));
     return {
       primary,
-      secondary: temporal && !matches ? `Temporal: ${temporal.label}` : "",
+      secondary: hasProjectedStatus && !matches ? `Temporal: ${temporal.label}` : "",
       secondaryState: temporal?.state || "",
       message: temporal && !matches ? temporal.message : "",
       temporalUrl: temporal?.temporalUrl || "",
