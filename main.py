@@ -325,7 +325,7 @@ async def app_start(name: str) -> JSONResponse:
         return JSONResponse({"ok": False, "error": f"unknown app: {name}"}, status_code=404)
 
     container = _container_for(entry)
-    if _supports_modes(entry) and _app_mode(entry) == "docker":
+    if container and _app_mode(entry) == "docker":
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, docker_service.start, container)
         if result.get("ok"):
@@ -574,7 +574,7 @@ async def app_stop(name: str) -> JSONResponse:
         return JSONResponse({"ok": False, "error": f"unknown app: {name}"}, status_code=404)
 
     container = _container_for(entry)
-    if _supports_modes(entry) and _app_mode(entry) == "docker":
+    if container and _app_mode(entry) == "docker":
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, docker_service.stop, container)
         if result.get("ok"):
