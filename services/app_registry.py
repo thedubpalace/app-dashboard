@@ -192,6 +192,8 @@ def list_apps(processes: list[dict[str, Any]] | None = None) -> list[dict[str, A
                 "healthCheck": app.get("healthCheck"),
                 "containerName": app.get("containerName"),
                 "dockerImage": app.get("dockerImage"),
+                "publicUrl": app.get("publicUrl"),
+                "port": app.get("port"),
             }
         )
     return apps

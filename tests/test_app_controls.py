@@ -1,10 +1,53 @@
 import unittest
-from unittest.mock import patch
+import subprocess
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 import main
 
 
 class AppControlTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dev_restart_uses_dashboard_python_environment(self):
+        entry = {"name": "planner", "runCmd": "npm run dev", "localPath": "C:/apps/planner", "healthCheck": {"type": "http", "target": "http://localhost:3000/project"}}
+        with patch.object(main.app_registry, "get_app", return_value=entry), \
+                patch.object(main, "_load_settings", return_value={}), \
+                patch.object(main.subprocess, "Popen") as popen:
+            response = await main.app_restart("planner")
+        self.assertEqual(response.status_code, 200)
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:2], [main.sys.executable, "-c"])
+        compile(command[2], '<restart>', 'exec')
+
+    async def test_compose_start_restores_dependencies(self):
+        entry = {"name": "temporal", "containerName": "temporal-app", "localPath": "C:/apps/temporal"}
+        settings = {"apps": {"temporal": {"dockerStartCmd": "docker compose up -d"}}}
+        with patch.object(main.app_registry, "get_app", return_value=entry), \
+                patch.object(main, "_load_settings", return_value=settings), \
+                patch.object(main.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run, \
+                patch.object(main.docker_service, "start") as start:
+            response = await main.app_start("temporal")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(run.call_args.args[0], ["docker", "compose", "up", "-d"])
+        self.assertEqual(run.call_args.kwargs["cwd"], entry["localPath"])
+        start.assert_not_called()
+
+    def test_compose_failure_is_reported(self):
+        settings = {"apps": {"temporal": {"dockerStartCmd": "docker compose up -d"}}}
+        with patch.object(main, "_load_settings", return_value=settings), \
+                patch.object(main.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "database failed")):
+            result = main._start_container({"name": "temporal"}, "temporal-app")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "database failed")
+
+    def test_cli_stop_does_not_stop_other_projects(self):
+        project = str(Path("project-a").resolve())
+        own = Mock(info={"name": "python.exe", "cwd": project})
+        other = Mock(info={"name": "python.exe", "cwd": str(Path("project-b").resolve())})
+        with patch.object(main.psutil, "process_iter", return_value=[own, other]):
+            self.assertEqual(main._kill_by_name("python", project), 1)
+        own.terminate.assert_called_once()
+        other.terminate.assert_not_called()
+
     async def test_container_only_start_and_stop_use_docker(self):
         entry = {
             "name": "solar-system",

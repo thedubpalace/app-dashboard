@@ -29,7 +29,9 @@
   },
   "apps": {
     "flight-deal-watcher": {
-      "containerName": "flight-deal-watcher"
+      "containerName": "flight-deal-watcher",
+      "devCmd": "C:/Users/thedu/code/flight-deal-watcher/.venv-local/Scripts/python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 5007",
+      "mode": "docker"
     },
     "pourover-guide": {
       "containerName": "pourover-guide-app"
@@ -38,11 +40,12 @@
       "containerName": "asteroid-impact-simulation"
     },
     "akai-mpc-web": {
-      "devCmd": "npm run dev"
+      "devCmd": "npm run dev",
+      "mode": "docker"
     },
     "daddy-medicine": {
       "devCmd": "npm run dev",
-      "mode": "dev"
+      "mode": "docker"
     },
     "team-pulse": {
       "devCmd": "npm run dev",
@@ -53,6 +56,15 @@
     },
     "skill-finder": {
       "devCmd": "C:/Users/thedu/code/skill-finder/.venv/Scripts/python.exe -m uvicorn main:app --host 0.0.0.0 --port 5002"
+    },
+    "stock-pattern": {
+      "devCmd": "C:/Users/thedu/code/stock-pattern/.venv/Scripts/python.exe main.py --ticker SCB.BK --top 10 --sort avg_return"
+    },
+    "vibecheck": {
+      "devCmd": "C:/Users/thedu/code/vibecheck/.venv/Scripts/python.exe agent.py --mode weekly"
+    },
+    "temporal-service-orchestrator": {
+      "dockerStartCmd": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/Users/thedu/code/temporal-service-orchestrator/deploy/start-stack.ps1"
     }
   }
 }

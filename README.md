@@ -29,6 +29,19 @@ The aggregate `/api/status` endpoint returns `apps`, `docker`, and `vmware`.
 Consumers of its former `veda` field should use `apps`. The individual
 `/api/apps` routes are unchanged.
 
+Per-app settings in `settings.json` can select a `devCmd` with that project's Python
+environment and a `mode` of `dev` or `docker`. For stacks with dependencies,
+`dockerStartCmd` runs from the project's `localPath` before Docker start/restart.
+Temporal uses this to restore Compose services and the Windows worker together.
+
+App links are discovered from Nginx Proxy Manager's active configuration, including
+subpaths, variable upstreams, and routes to other machines. Registered public URLs
+and public health checks identify the matching proxy location. Apps without a
+matching proxy route are left without a public link.
+
+Stock Pattern and VibeCheck are finite CLI jobs. Their processes normally exit when
+their reports are complete; a stopped indicator does not imply a startup failure.
+
 ## Verify
 
 Run `python -m unittest discover -s tests -v`.

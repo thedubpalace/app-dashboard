@@ -11,6 +11,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -275,12 +276,44 @@ def _attach_public_urls(apps: list[dict[str, Any]]) -> None:
     by Nginx Proxy Manager. Dev and container now share a port per app, so the
     same link works in either mode."""
     urls = nginx_proxy.public_urls()
-    if not urls:
-        return
+    routes = nginx_proxy.public_routes()
+
+    def address(url: str) -> tuple[str | None, int | None]:
+        parsed = urlparse(url)
+        return parsed.hostname, parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
+
     for entry in apps:
-        port = _dev_port(entry)
+        entry.pop("url", None)
+        declared = entry.get("publicUrl")
+        if declared:
+            match = next((r["url"] for r in routes if address(r["url"]) == address(declared)
+                          and urlparse(r["url"]).path.rstrip('/') == urlparse(declared).path.rstrip('/')), None)
+            if match:
+                entry["url"] = match
+                continue
+        health = entry.get("healthCheck") or {}
+        matches = []
+        for target in (health.get("publicTarget"), health.get("target")):
+            if not isinstance(target, str) or '://' not in target:
+                continue
+            for route in routes:
+                prefix = urlparse(route["url"]).path.rstrip('/')
+                path = urlparse(target).path
+                if address(route["url"]) == address(target) and (not prefix or path == prefix or path.startswith(prefix + '/')):
+                    matches.append(route["url"])
+        if matches:
+            entry["url"] = max(matches, key=lambda url: len(urlparse(url).path))
+            continue
+        port = entry.get("port") or _dev_port(entry)
         if port:
-            entry["url"] = urls.get(port)
+            if port in urls:
+                entry["url"] = urls[port]
+            else:
+                # A unique remote route also identifies VM-hosted apps such
+                # as Home Assistant. Never guess when several hosts share a port.
+                candidates = {r["url"] for r in routes if r["port"] == port}
+                if len(candidates) == 1:
+                    entry["url"] = candidates.pop()
 
 
 def _attach_run_modes(apps: list[dict[str, Any]]) -> None:
@@ -327,7 +360,7 @@ async def app_start(name: str) -> JSONResponse:
     container = _container_for(entry)
     if container and _app_mode(entry) == "docker":
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, docker_service.start, container)
+        result = await loop.run_in_executor(None, _start_container, entry, container)
         if result.get("ok"):
             result.setdefault("message", f"started container {container}")
         return JSONResponse(result)
@@ -376,6 +409,27 @@ def _start_local(entry: dict[str, Any]) -> str | None:
     return None
 
 
+def _start_container(entry: dict[str, Any], container: str) -> dict[str, Any]:
+    """Bring up configured dependencies before starting a Compose-backed app."""
+    command = _app_settings(entry).get("dockerStartCmd")
+    if not command:
+        return docker_service.start(container)
+    try:
+        result = subprocess.run(
+            shlex.split(command, posix=False),
+            cwd=entry.get("localPath"),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            creationflags=_NO_WINDOW,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": str(exc)}
+    if result.returncode:
+        return {"ok": False, "error": (result.stderr or result.stdout).strip()}
+    return {"ok": True, "message": f"started {container} and its dependencies"}
+
+
 @app.post("/api/apps/{name}/restart")
 async def app_restart(name: str) -> JSONResponse:
     entry = app_registry.get_app(name)
@@ -388,6 +442,10 @@ async def app_restart(name: str) -> JSONResponse:
     container_name = _container_for(entry)
     if container_name and _app_mode(entry) == "docker":
         loop = asyncio.get_running_loop()
+        if _app_settings(entry).get("dockerStartCmd"):
+            started = await loop.run_in_executor(None, _start_container, entry, container_name)
+            if not started.get("ok"):
+                return JSONResponse(started, status_code=500)
         result = await loop.run_in_executor(None, docker_service.restart, container_name)
         if result.get("ok"):
             result.setdefault("message", f"restarted container {container_name}")
@@ -406,7 +464,7 @@ async def app_restart(name: str) -> JSONResponse:
     script = _build_restart_script(port, token, run_cmd, cwd)
     try:
         subprocess.Popen(
-            ["python", "-c", script],
+            [sys.executable, "-c", script],
             creationflags=_NO_WINDOW | _NEW_GROUP,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -421,6 +479,7 @@ async def app_restart(name: str) -> JSONResponse:
 def _build_restart_script(port: int | None, token: str | None, run_cmd: str, cwd: str | None) -> str:
     return f"""
 import time, subprocess, socket, shlex
+from pathlib import Path
 import psutil
 
 time.sleep(0.7)
@@ -437,11 +496,11 @@ if port:
             except: pass
 else:
     needle = (token or '').lower()
-    for proc in psutil.process_iter(['name']):
+    for proc in psutil.process_iter(['name', 'cwd']):
         try:
             pname = (proc.info.get('name') or '').lower()
             if pname.endswith('.exe'): pname = pname[:-4]
-            if pname == needle: proc.terminate()
+            if pname == needle and cwd and proc.info.get('cwd') and Path(proc.info['cwd']).resolve() == Path(cwd).resolve(): proc.terminate()
         except: pass
 
 if port:
@@ -462,9 +521,9 @@ try:
 except Exception:
     args = run_cmd.split()
 try:
-    subprocess.Popen(args, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    subprocess.Popen(args, cwd=cwd, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
 except FileNotFoundError:
-    subprocess.Popen(run_cmd, cwd=cwd, shell=True)
+    subprocess.Popen(run_cmd, cwd=cwd, shell=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
 """
 
 
@@ -595,8 +654,8 @@ def _stop_local(entry: dict[str, Any]) -> int:
     if killed == 0:
         # Fall back: match the first command token against process names.
         token = _first_token(_dev_cmd(entry))
-        if token:
-            killed += _kill_by_name(token)
+        if token and entry.get("localPath"):
+            killed += _kill_by_name(token, entry["localPath"])
     return killed
 
 
@@ -622,7 +681,7 @@ async def app_set_mode(name: str, payload: dict[str, Any]) -> JSONResponse:
 
     if mode == "docker":
         await loop.run_in_executor(None, _stop_local, entry)
-        result = await loop.run_in_executor(None, docker_service.start, container)
+        result = await loop.run_in_executor(None, _start_container, entry, container)
         if not result.get("ok"):
             return JSONResponse(
                 {"ok": False, "error": f"docker start {container}: {result.get('error')}"},
@@ -1035,15 +1094,15 @@ def _kill_by_port(port: int) -> int:
     return killed
 
 
-def _kill_by_name(name: str) -> int:
+def _kill_by_name(name: str, cwd: str | None = None) -> int:
     needle = name.lower()
     killed = 0
-    for proc in psutil.process_iter(["name", "pid"]):
+    for proc in psutil.process_iter(["name", "pid", "cwd"]):
         try:
             pname = (proc.info.get("name") or "").lower()
             if pname.endswith(".exe"):
                 pname = pname[:-4]
-            if pname == needle:
+            if pname == needle and (cwd is None or (proc.info.get("cwd") and Path(proc.info["cwd"]).resolve() == Path(cwd).resolve())):
                 proc.terminate()
                 killed += 1
         except (psutil.NoSuchProcess, psutil.AccessDenied):
