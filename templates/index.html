@@ -13,7 +13,7 @@
     in one tap, from desktop or phone.
   FIRST VIEWPORT: wallpaper fills the frame; header title floats directly on
     it under a soft top scrim; below it, four stacked glass panels (Tailscale,
-    Veda Apps, Docker, VMware), each a grouped list of glass rows.
+    Apps, Docker, VMware), each a grouped list of glass rows.
   FORM: brief-pinned world (user named "iOS Liquid Glass" explicitly) — no
     concept tournament run; direction committed straight from the brief per
     the skill's "brief wins / pinned direction beats the roll" rule.
@@ -25,7 +25,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Veda Dashboard</title>
+  <title>App Dashboard</title>
   <!-- Google Fonts (fallback for non-Apple devices) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -323,6 +323,11 @@
       flex-shrink: 0; margin-left: auto;
       justify-content: flex-end; align-items: center;
     }
+    .app-row .row-actions { flex: 1; justify-content: flex-start; }
+    .session-actions {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+      gap: 5px; margin-left: auto;
+    }
     .codex-control { display: inline-flex; flex-shrink: 0; isolation: isolate; }
     .codex-control .btn-pill { border-radius: 0; }
     .codex-control .btn-pill + .btn-pill { margin-left: -1px; }
@@ -491,8 +496,13 @@
       .app-group-sub .lead-line { padding-left: 18px; }
       /* Too many controls for one phone-width line - let them wrap below. */
       .row-main { flex-wrap: wrap; row-gap: 6px; }
-      .row-content { flex: 1 1 auto; }
+      .row-content { flex: 1 1 0; }
+      .row-main > .mode-seg { margin-right: -4px; }
+      .mode-seg { gap: 1px; padding: 1px; }
+      .mode-seg button { font-size: 8px; padding: 2px 6px; letter-spacing: 0.02em; }
+      .row-main > .mode-seg + .pill-badge { margin-left: 0; }
       .row-actions { flex-wrap: wrap; justify-content: flex-start; margin-left: 0; flex: 1 1 100%; order: 3; }
+      .app-row .row-actions { flex: 1 1 100%; }
       .row-detail { padding-left: 16px; }
     }
   </style>
@@ -506,7 +516,7 @@
 
     <!-- Header -->
     <header class="top">
-      <h1>Dashboard</h1>
+      <h1>App Dashboard</h1>
       <div class="header-actions">
         <button id="detailsBtn" class="icon-btn" onclick="toggleDetails()" title="Show details" aria-label="Show details" aria-pressed="false">
           <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
@@ -540,21 +550,21 @@
       <div class="rows" id="tailscaleBody"></div>
     </section>
 
-    <!-- Veda Apps -->
+    <!-- Apps -->
     <section class="panel">
       <div class="panel-head">
         <div class="panel-title">
           <span class="section-icon" style="background:rgba(106,92,230,0.22); color:var(--sys-indigo);">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.8"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.8"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.8"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.8"/></svg>
           </span>
-          <h2>Veda Apps</h2>
+          <h2>Apps</h2>
         </div>
         <div class="seg">
-          <button id="vedaTabStatus" class="active" onclick="setVedaTab('status')">Status</button>
-          <button id="vedaTabConfig" onclick="setVedaTab('config')">Config</button>
+          <button id="appsTabStatus" class="active" onclick="setAppsTab('status')">Status</button>
+          <button id="appsTabConfig" onclick="setAppsTab('config')">Config</button>
         </div>
       </div>
-      <div class="rows" id="vedaBody"></div>
+      <div class="rows" id="appsBody"></div>
     </section>
 
     <!-- Docker -->
@@ -721,8 +731,20 @@
       b.classList.toggle("is-active", on);
       b.setAttribute("aria-pressed", on ? "true" : "false");
       b.title = on ? "Hide details" : "Show details";
-      try { localStorage.setItem("veda.details", on ? "1" : "0"); } catch (_) {}
+      try { localStorage.setItem("app-dashboard.details", on ? "1" : "0"); } catch (_) {}
     }
+
+    const mobileRows = window.matchMedia("(max-width: 620px)");
+    function positionModeControl(main) {
+      const mode = main.querySelector(".mode-seg");
+      if (!mode) return;
+      const pill = main.querySelector(".pill-badge");
+      if (mobileRows.matches) main.insertBefore(mode, pill || main.querySelector(".row-actions"));
+      else main.querySelector(".row-actions").prepend(mode);
+    }
+    mobileRows.addEventListener("change", () => {
+      document.querySelectorAll(".row-main").forEach(positionModeControl);
+    });
 
     // Row factory — cells[0] is the always-visible line, the rest is detail.
     function row(cells, actionBtns, key) {
@@ -749,6 +771,7 @@
         actionBtns.forEach(b => actions.appendChild(b));
         main.appendChild(actions);
       }
+      positionModeControl(main);
 
       const details = cells.slice(1);
       if (!details.length) {
@@ -847,16 +870,16 @@
       return e;
     }
 
-    // ---------- Veda tab state ----------
-    let _vedaTab = "status";
-    let _vedaApps = [];
+    // ---------- Apps tab state ----------
+    let _appsTab = "status";
+    let _apps = [];
 
-    function setVedaTab(tab) {
-      _vedaTab = tab;
-      document.getElementById("vedaTabStatus").classList.toggle("active", tab === "status");
-      document.getElementById("vedaTabConfig").classList.toggle("active", tab === "config");
-      if (tab === "config") renderVedaConfig(_vedaApps);
-      else renderVeda(_vedaApps);
+    function setAppsTab(tab) {
+      _appsTab = tab;
+      document.getElementById("appsTabStatus").classList.toggle("active", tab === "status");
+      document.getElementById("appsTabConfig").classList.toggle("active", tab === "config");
+      if (tab === "config") renderAppsConfig(_apps);
+      else renderApps(_apps);
     }
 
     function configField(label, value, accent) {
@@ -873,8 +896,8 @@
       return r;
     }
 
-    function renderVedaConfig(apps) {
-      const body = document.getElementById("vedaBody");
+    function renderAppsConfig(apps) {
+      const body = document.getElementById("appsBody");
       body.innerHTML = "";
       if (!apps.length) { body.appendChild(emptyRow("No apps in registry.")); return; }
       apps.forEach((a) => {
@@ -924,22 +947,26 @@
         btns.push(btn("Restart", "restart", (b) => action(b, `/api/apps/${enc}/restart`, undefined, 5000, true, "Restarting…")));
       }
       if (a.localPath) {
+        const sessionActions = el("div", "session-actions");
         const openClaude = btn("Claude", "shell", (b) => action(b, `/api/apps/${enc}/shell`));
         if (n > 0) {
           const endClaude = btn(`End ×${n}`, "stop", (b) => action(b, `/api/apps/${enc}/claude-sessions/kill-all`));
-          btns.push(btnGroup("Claude controls", [openClaude, endClaude]));
+          sessionActions.appendChild(btnGroup("Claude controls", [openClaude, endClaude]));
         } else {
-          btns.push(openClaude);
+          sessionActions.appendChild(openClaude);
         }
         const openCodex = btn("Codex", "shell", (b) => action(b, `/api/apps/${enc}/codex`));
         if (codexSessions > 0) {
           const endCodex = btn(`End ×${codexSessions}`, "stop", (b) => action(b, `/api/apps/${enc}/codex-sessions/kill-all`));
-          btns.push(btnGroup("Codex controls", [openCodex, endCodex]));
+          sessionActions.appendChild(btnGroup("Codex controls", [openCodex, endCodex]));
         } else {
-          btns.push(openCodex);
+          sessionActions.appendChild(openCodex);
         }
+        btns.push(sessionActions);
       }
-      return row(cells, btns, "app:" + a.name);
+      const appRow = row(cells, btns, "app:" + a.name);
+      appRow.classList.add("app-row");
+      return appRow;
     }
 
     // Dev server vs container — one tap stops the losing side and starts the
@@ -988,7 +1015,7 @@
     // Group apps whose name follows the "<base>" / "<base>-frontend" /
     // "<base>-backend" convention into one card with independent sub-rows,
     // each keeping its own start/stop/restart.
-    function groupVedaApps(apps) {
+    function groupApps(apps) {
       const groups = new Map();
       apps.forEach((a) => {
         let base = a.name, role = null;
@@ -1012,11 +1039,11 @@
       return ordered;
     }
 
-    function renderVeda(apps) {
-      const body = document.getElementById("vedaBody");
+    function renderApps(apps) {
+      const body = document.getElementById("appsBody");
       body.innerHTML = "";
       if (!apps.length) { body.appendChild(emptyRow("No apps in registry.")); return; }
-      groupVedaApps(apps).forEach(({ base, members }) => {
+      groupApps(apps).forEach(({ base, members }) => {
         if (members.length === 1) {
           body.appendChild(buildAppRow(members[0].app));
           return;
@@ -1202,34 +1229,34 @@
     }
 
     // ---------- refresh — parallel per-section fetches ----------
-    let _loadingVeda = false, _loadingDocker = false, _loadingVmware = false;
+    let _loadingApps = false, _loadingDocker = false, _loadingVmware = false;
 
     function refreshAll(silent = false) {
       const rb = document.getElementById("refreshBtn");
       const icon = document.getElementById("refreshIcon");
-      if (!_loadingVeda && !_loadingDocker && !_loadingVmware) {
+      if (!_loadingApps && !_loadingDocker && !_loadingVmware) {
         rb.disabled = true;
         icon.style.animation = "spin 0.7s linear infinite";
       }
 
       const tryDone = () => {
-        if (!_loadingVeda && !_loadingDocker && !_loadingVmware) {
+        if (!_loadingApps && !_loadingDocker && !_loadingVmware) {
           icon.style.animation = "";
           rb.disabled = false;
         }
       };
 
-      if (!_loadingVeda) {
-        _loadingVeda = true;
+      if (!_loadingApps) {
+        _loadingApps = true;
         fetch("/api/apps")
           .then(r => r.json())
           .then(data => {
-            _vedaApps = data || [];
-            if (_vedaTab === "config") renderVedaConfig(_vedaApps);
-            else renderVeda(_vedaApps);
+            _apps = data || [];
+            if (_appsTab === "config") renderAppsConfig(_apps);
+            else renderApps(_apps);
           })
-          .catch(e => { if (!silent) toast("Veda: " + (e.message || e), false); })
-          .finally(() => { _loadingVeda = false; tryDone(); });
+          .catch(e => { if (!silent) toast("Apps: " + (e.message || e), false); })
+          .finally(() => { _loadingApps = false; tryDone(); });
       }
 
       if (!_loadingDocker) {
@@ -1326,12 +1353,12 @@
         widths.forEach((w, i) => body.appendChild(skRow(w, btnCount, i * 100)));
       };
       sk("tailscaleBody", [100], 1);
-      sk("vedaBody",      [140, 120, 160], 2);
+      sk("appsBody",      [140, 120, 160], 2);
       sk("dockerBody",    [130, 110, 145], 1);
       sk("vmwareBody",    [120, 140], 1);
     }
 
-    try { toggleDetails(localStorage.getItem("veda.details") === "1"); } catch (_) {}
+    try { toggleDetails((localStorage.getItem("app-dashboard.details") ?? localStorage.getItem("veda.details")) === "1"); } catch (_) {}
     initSkeletons();
     loadTailscale();
     setInterval(loadTailscale, 15000);

@@ -1,4 +1,4 @@
-"""Read the Veda registry and perform live health checks for each app."""
+"""Read the app registry and perform live health checks for each app."""
 from __future__ import annotations
 
 import json
@@ -12,8 +12,8 @@ from urllib.parse import urlparse
 
 import psutil
 
-_DEFAULT_REGISTRY = r"C:/Users/ADMIN/Documents/code/veda/.veda/projects/registry.json"
-REGISTRY_PATH = Path(os.getenv("VEDA_REGISTRY", _DEFAULT_REGISTRY))
+_DEFAULT_REGISTRY = str(Path(__file__).resolve().parents[2] / "veda" / ".veda" / "projects" / "registry.json")
+REGISTRY_PATH = Path(os.getenv("APP_DASHBOARD_REGISTRY") or os.getenv("VEDA_REGISTRY", _DEFAULT_REGISTRY))
 
 HEALTH_TIMEOUT = 3.0
 

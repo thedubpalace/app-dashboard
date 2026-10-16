@@ -44,7 +44,7 @@ every semantic state:
 | `--sys-orange` | `#FF9F0A` | restart / pending |
 | `--sys-blue`   | `#0A84FF` | primary action / focus ring / shell |
 | `--sys-teal`   | `#40C8E0` | Tailscale section icon |
-| `--sys-indigo` | `#6A5CE6` | Veda Apps section icon |
+| `--sys-indigo` | `#6A5CE6` | Apps section icon |
 | `--sys-gray`   | `#98989F` | stopped / neutral / VMware icon |
 
 The old amber accent theme was not a brand commitment (no logo/identity

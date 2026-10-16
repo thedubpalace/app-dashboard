@@ -21,8 +21,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Path to veda registry — override at runtime via -e or docker-compose
-ENV VEDA_REGISTRY=/veda/.veda/projects/registry.json
+# Path to the shared app registry — override at runtime via -e or docker-compose
+ENV APP_DASHBOARD_REGISTRY=/veda/.veda/projects/registry.json
 
 EXPOSE 8765
 

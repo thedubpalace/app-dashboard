@@ -1,4 +1,4 @@
 @echo off
-cd /d "C:\Users\ADMIN\Documents\code\veda-dashboard"
+cd /d "%~dp0"
 start "" http://localhost:8765
-python -m uvicorn main:app --host 0.0.0.0 --port 8765
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-service.ps1"

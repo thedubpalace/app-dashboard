@@ -2,11 +2,11 @@
 [CmdletBinding()]
 param(
     [string]$VmrunPath = "C:\Program Files\VMware\VMware Workstation\vmrun.exe",
-    [string]$VmxPath = "C:\Users\ADMIN\Documents\Virtual Machines\home-assistant.vmx"
+    [string]$VmxPath = 'D:\Users\ADMIN\Documents\Virtual Machines\home-assistant.vmx'
 )
 
 $ErrorActionPreference = "Stop"
-$TaskName = "Veda - Home Assistant VM Autostart"
+$TaskName = "App Dashboard - Home Assistant VM Autostart"
 
 if (-not (Test-Path -LiteralPath $VmrunPath -PathType Leaf)) {
     throw "vmrun.exe not found: $VmrunPath"

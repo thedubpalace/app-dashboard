@@ -9,16 +9,20 @@
       "solar",
       "flight",
       "pour",
-      "akai"
+      "akai",
+      "team-pulse",
+      "asteroid",
+      "daddy",
+      "flood"
     ]
   },
   "vmware": {
     "managed": [
       {
         "name": "home-assistant",
-        "vmx": "C:/Users/ADMIN/Documents/Virtual Machines/home-assistant.vmx",
+        "vmx": "D:/Users/ADMIN/Documents/Virtual Machines/home-assistant.vmx",
         "desiredRunning": true,
-        "healthUrl": "https://wavenwire.duckdns.org/api/",
+        "healthUrl": "http://192.168.1.131:8123/api/",
         "healthExpectedStatus": 401
       }
     ]
@@ -39,6 +43,10 @@
     "daddy-medicine": {
       "devCmd": "npm run dev",
       "mode": "dev"
+    },
+    "team-pulse": {
+      "devCmd": "npm run dev",
+      "mode": "docker"
     }
   }
 }

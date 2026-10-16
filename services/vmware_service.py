@@ -64,7 +64,7 @@ def _public_health(vm: dict[str, Any], running: bool) -> dict[str, Any] | None:
     status: int | None = None
     detail = ""
     try:
-        request = Request(health_url, headers={"User-Agent": "Veda-Dashboard-Healthcheck/1.0"})
+        request = Request(health_url, headers={"User-Agent": "App-Dashboard-Healthcheck/1.0"})
         with urlopen(request, timeout=HEALTH_TIMEOUT) as response:
             status = response.status
     except HTTPError as exc:

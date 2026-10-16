@@ -1,4 +1,4 @@
-"""Veda Dashboard — unified control panel for Veda apps, Docker, and VMware.
+"""App Dashboard — unified control panel for registered apps, Docker, and VMware.
 
 Run: uvicorn main:app --reload --port 8765
 """
@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from services import docker_service, nginx_proxy, veda_apps, vmware_service
+from services import docker_service, nginx_proxy, app_registry, vmware_service
 
 BASE_DIR = Path(__file__).resolve().parent
 INDEX_HTML = BASE_DIR / "templates" / "index.html"
@@ -50,7 +50,7 @@ def _is_docker_cmd(run_cmd: str | None) -> bool:
 def _container_for(entry: dict[str, Any], settings: dict[str, Any] | None = None) -> str | None:
     """The container backing this app.
 
-    The Veda registry only names a container for apps that are deployed as
+    The app registry only names a container for apps that are deployed as
     one. Plenty of apps ship a Dockerfile *and* a dev server but have no
     registry link, so settings.json can map them here without editing the
     shared registry.
@@ -163,7 +163,7 @@ def _apply_docker_filter(containers: list[dict], filters: list[str]) -> list[dic
         return containers
     return [c for c in containers if any(kw in (c.get("name") or "").lower() for kw in f)]
 
-app = FastAPI(title="Veda Dashboard")
+app = FastAPI(title="App Dashboard")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 _vmware_watchdog_task: asyncio.Task | None = None
@@ -241,13 +241,13 @@ async def set_docker_filter(payload: dict[str, Any]) -> JSONResponse:
 @app.get("/api/status")
 async def status() -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    processes = await loop.run_in_executor(None, veda_apps.snapshot_processes)
-    veda, docker, vmware = await asyncio.gather(
-        loop.run_in_executor(None, veda_apps.list_apps, processes),
+    processes = await loop.run_in_executor(None, app_registry.snapshot_processes)
+    apps, docker, vmware = await asyncio.gather(
+        loop.run_in_executor(None, app_registry.list_apps, processes),
         loop.run_in_executor(None, docker_service.list_containers),
         loop.run_in_executor(None, vmware_service.list_vms, _managed_vms()),
     )
-    _attach_session_counts(veda, processes)
+    _attach_session_counts(apps, processes)
 
     filters = _load_settings().get("docker", {}).get("filter", [])
     if isinstance(docker, dict) and "containers" in docker:
@@ -255,15 +255,15 @@ async def status() -> dict[str, Any]:
         docker["containers"] = _apply_docker_filter(docker["containers"], filters)
         docker["filtered"] = bool(filters)
         docker["filterList"] = filters
-    return {"veda": veda, "docker": docker, "vmware": vmware}
+    return {"apps": apps, "docker": docker, "vmware": vmware}
 
 
 # ----------------------------------------------------------------------------
-# Veda apps
+# registered apps
 # ----------------------------------------------------------------------------
 def _apps_with_sessions() -> list[dict[str, Any]]:
-    processes = veda_apps.snapshot_processes()
-    result = veda_apps.list_apps(processes)
+    processes = app_registry.snapshot_processes()
+    result = app_registry.list_apps(processes)
     _attach_session_counts(result, processes)
     _attach_run_modes(result)
     _attach_public_urls(result)
@@ -320,7 +320,7 @@ async def apps() -> list[dict[str, Any]]:
 
 @app.post("/api/apps/{name}/start")
 async def app_start(name: str) -> JSONResponse:
-    entry = veda_apps.get_app(name)
+    entry = app_registry.get_app(name)
     if not entry:
         return JSONResponse({"ok": False, "error": f"unknown app: {name}"}, status_code=404)
 
@@ -378,7 +378,7 @@ def _start_local(entry: dict[str, Any]) -> str | None:
 
 @app.post("/api/apps/{name}/restart")
 async def app_restart(name: str) -> JSONResponse:
-    entry = veda_apps.get_app(name)
+    entry = app_registry.get_app(name)
     if not entry:
         return JSONResponse({"ok": False, "error": f"unknown app: {name}"}, status_code=404)
 
@@ -470,15 +470,28 @@ except FileNotFoundError:
 
 @app.post("/api/apps/{name}/shell")
 async def app_shell(name: str) -> JSONResponse:
-    entry = veda_apps.get_app(name)
+    entry = app_registry.get_app(name)
     if not entry:
         return JSONResponse({"ok": False, "error": f"unknown app: {name}"}, status_code=404)
     cwd = entry.get("localPath")
     if not cwd or not Path(cwd).is_dir():
         return JSONResponse({"ok": False, "error": "localPath not found"}, status_code=400)
+    claude_exe = _find_claude_executable()
+    if not claude_exe:
+        return JSONResponse(
+            {"ok": False, "error": "Claude Code CLI was not found. Install it or add it to PATH."},
+            status_code=503,
+        )
     try:
+        safe_cwd = str(cwd).replace("'", "''")
+        safe_claude = claude_exe.replace("'", "''")
         subprocess.Popen(
-            ["powershell", "-NoExit", "-Command", f"Set-Location '{cwd}'; claude remote-control"],
+            [
+                "powershell",
+                "-NoExit",
+                "-Command",
+                f"Set-Location -LiteralPath '{safe_cwd}'; & '{safe_claude}' remote-control",
+            ],
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
         return JSONResponse({"ok": True, "message": f"opened shell for {name}"})
@@ -489,7 +502,7 @@ async def app_shell(name: str) -> JSONResponse:
 @app.post("/api/apps/{name}/codex")
 async def app_codex(name: str) -> JSONResponse:
     """Open an interactive Codex session in an app's local folder."""
-    entry = veda_apps.get_app(name)
+    entry = app_registry.get_app(name)
     if not entry:
         return JSONResponse({"ok": False, "error": f"unknown app: {name}"}, status_code=404)
     cwd = entry.get("localPath")
@@ -518,6 +531,24 @@ async def app_codex(name: str) -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
+def _find_claude_executable() -> str | None:
+    """Find the Claude Code CLI even when this server's PATH predates its install."""
+    from_path = shutil.which("claude") or shutil.which("claude.exe")
+    if from_path:
+        return from_path
+
+    # The native installer puts claude.exe in ~/.local/bin; npm installs use
+    # %APPDATA%\npm. Neither is guaranteed to be on a service's PATH.
+    candidates = [
+        Path.home() / ".local" / "bin" / "claude.exe",
+        Path.home() / "AppData" / "Roaming" / "npm" / "claude.cmd",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return str(path)
+    return None
+
+
 def _find_codex_executable() -> str | None:
     """Find the Codex CLI even when this server's PATH predates its install."""
     from_path = shutil.which("codex") or shutil.which("codex.exe")
@@ -538,7 +569,7 @@ def _find_codex_executable() -> str | None:
 
 @app.post("/api/apps/{name}/stop")
 async def app_stop(name: str) -> JSONResponse:
-    entry = veda_apps.get_app(name)
+    entry = app_registry.get_app(name)
     if not entry:
         return JSONResponse({"ok": False, "error": f"unknown app: {name}"}, status_code=404)
 
@@ -573,7 +604,7 @@ def _stop_local(entry: dict[str, Any]) -> int:
 async def app_set_mode(name: str, payload: dict[str, Any]) -> JSONResponse:
     """Flip an app between its dev server and its container, stopping whichever
     side is losing so the two never fight over the same port."""
-    entry = veda_apps.get_app(name)
+    entry = app_registry.get_app(name)
     if not entry:
         return JSONResponse({"ok": False, "error": f"unknown app: {name}"}, status_code=404)
 
@@ -822,12 +853,12 @@ def _find_claude_sessions(
     """Return one entry per PowerShell terminal running claude remote-control.
 
     Pass app_path to filter to sessions whose Set-Location matches that path.
-    Pass processes (from veda_apps.snapshot_processes()) to reuse an existing
+    Pass processes (from app_registry.snapshot_processes()) to reuse an existing
     process scan instead of taking a fresh one.
     """
     norm_filter = _norm_path(app_path) if app_path else None
     if processes is None:
-        processes = veda_apps.snapshot_processes()
+        processes = app_registry.snapshot_processes()
     results = []
     for proc in processes:
         name = (proc["name"] or "").lower().replace(".exe", "")
@@ -836,7 +867,7 @@ def _find_claude_sessions(
         cmdline = " ".join(str(c) for c in proc["cmdline"])
         if "remote-control" not in cmdline or "claude" not in cmdline.lower():
             continue
-        m = re.search(r"Set-Location\s+'([^']+)'", cmdline)
+        m = re.search(r"Set-Location\s+(?:-LiteralPath\s+)?'([^']+)'", cmdline)
         path = m.group(1) if m else None
         if norm_filter and _norm_path(path) != norm_filter:
             continue
@@ -850,7 +881,7 @@ def _find_codex_sessions(
     """Return dashboard-launched Codex terminals, optionally for one app path."""
     norm_filter = _norm_path(app_path) if app_path else None
     if processes is None:
-        processes = veda_apps.snapshot_processes()
+        processes = app_registry.snapshot_processes()
     results = []
     for proc in processes:
         name = (proc["name"] or "").lower().replace(".exe", "")
@@ -880,7 +911,7 @@ def _attach_session_counts(apps: list[dict[str, Any]], processes: list[dict[str,
 
 @app.post("/api/apps/{name}/claude-sessions/kill-all")
 async def kill_app_claude_sessions(name: str) -> JSONResponse:
-    entry = veda_apps.get_app(name)
+    entry = app_registry.get_app(name)
     if not entry:
         return JSONResponse({"ok": False, "error": f"unknown app: {name}"}, status_code=404)
     sessions = _find_claude_sessions(app_path=entry.get("localPath"))
@@ -897,7 +928,7 @@ async def kill_app_claude_sessions(name: str) -> JSONResponse:
 
 @app.post("/api/apps/{name}/codex-sessions/kill-all")
 async def kill_app_codex_sessions(name: str) -> JSONResponse:
-    entry = veda_apps.get_app(name)
+    entry = app_registry.get_app(name)
     if not entry:
         return JSONResponse({"ok": False, "error": f"unknown app: {name}"}, status_code=404)
     sessions = _find_codex_sessions(app_path=entry.get("localPath"))
@@ -919,7 +950,7 @@ async def kill_app_codex_sessions(name: str) -> JSONResponse:
 
 
 # ----------------------------------------------------------------------------
-# Helpers for stopping Veda apps
+# Helpers for stopping registered apps
 # ----------------------------------------------------------------------------
 def _port_from_healthcheck(hc: dict[str, Any]) -> int | None:
     if (hc.get("type") or "").lower() == "port":
