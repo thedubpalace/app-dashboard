@@ -69,7 +69,7 @@ def _check_port(target: Any) -> bool:
         elif "://" in t:
             parsed = urlparse(t)
             host = parsed.hostname or host
-            port = parsed.port
+            port = parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
         elif ":" in t:
             host, _, p = t.rpartition(":")
             host = host or "localhost"
