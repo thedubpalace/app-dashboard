@@ -44,4 +44,19 @@ their reports are complete; a stopped indicator does not imply a startup failure
 
 ## Verify
 
+The **Remote Access** section groups Tailscale and Sunshine controls.
+Sunshine's **Restart** button restarts the local Windows
+`SunshineService` and waits for it to report Running. It asks for confirmation
+because active Moonlight streams disconnect during the restart.
+
+If Windows denies service control, run this once in an Administrator PowerShell,
+using the account that runs App Dashboard:
+
+```powershell
+.\setup-sunshine-control.ps1 -Account 'MINIPC-KONG\thedu'
+```
+
+This grants that account query-status, start, and stop permissions for Sunshine
+only. The dashboard itself does not need to run as Administrator.
+
 Run `python -m unittest discover -s tests -v`.

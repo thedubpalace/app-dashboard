@@ -790,6 +790,39 @@ async def docker_fix() -> JSONResponse:
 # ----------------------------------------------------------------------------
 # System
 # ----------------------------------------------------------------------------
+def _restart_sunshine() -> dict[str, Any]:
+    script = """
+$ErrorActionPreference = 'Stop'
+try {
+    $service = Get-Service -Name 'SunshineService'
+    Restart-Service -InputObject $service -ErrorAction Stop
+    $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+    Write-Output 'Sunshine restarted'
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+"""
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=45, creationflags=_NO_WINDOW,
+        )
+        if result.returncode:
+            return {"ok": False, "error": "Could not restart Sunshine. Run setup-sunshine-control.ps1 once as Administrator. " + (result.stderr.strip() or "Service control failed.")}
+        return {"ok": True, "message": "Sunshine restarted. You can reconnect Moonlight."}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Sunshine restart timed out. Check the Sunshine Service in Windows Services."}
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/system/sunshine/restart")
+async def sunshine_restart() -> JSONResponse:
+    result = await asyncio.get_running_loop().run_in_executor(None, _restart_sunshine)
+    return JSONResponse(result, status_code=200 if result["ok"] else 503)
+
+
 @app.post("/api/system/restart")
 async def system_restart() -> JSONResponse:
     try:

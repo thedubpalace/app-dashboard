@@ -12,7 +12,7 @@
     apps/containers/VMs are alive, and can start/stop/restart any of them
     in one tap, from desktop or phone.
   FIRST VIEWPORT: wallpaper fills the frame; header title floats directly on
-    it under a soft top scrim; below it, four stacked glass panels (Tailscale,
+    it under a soft top scrim; below it, four stacked glass panels (Remote Access,
     Apps, Docker, VMware), each a grouped list of glass rows.
   FORM: brief-pinned world (user named "iOS Liquid Glass" explicitly) — no
     concept tournament run; direction committed straight from the brief per
@@ -231,6 +231,9 @@
     }
     .rows > .row:first-child { border-top: none; }
     .row:hover { background: rgba(255,255,255,0.05); }
+    .remote-access-rows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .remote-access-rows > .row { border-top: none; border-left: 1px solid var(--glass-hairline); }
+    .remote-access-rows .row-content { flex: 0 1 auto; }
 
     /* One compact line: name + status, actions, disclosure. */
     .row-main { display: flex; align-items: center; gap: 10px; min-height: 30px; }
@@ -504,6 +507,8 @@
       .row-actions { flex-wrap: wrap; justify-content: flex-start; margin-left: 0; flex: 1 1 100%; order: 3; }
       .app-row .row-actions { flex: 1 1 100%; }
       .row-detail { padding-left: 16px; }
+      .remote-access-rows .row-main { gap: 6px; }
+      .remote-access-rows .row { padding: 6px 10px; }
     }
   </style>
 </head>
@@ -537,17 +542,30 @@
       </div>
     </header>
 
-    <!-- Tailscale -->
+    <!-- Remote Access -->
     <section class="panel">
       <div class="panel-head">
         <div class="panel-title">
           <span class="section-icon icon-wifi" style="background:rgba(64,200,224,0.22); color:var(--sys-teal);">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6"/><path d="M8.5 15.5a5 5 0 0 1 7 0"/><path d="M5.5 12.5a9 9 0 0 1 13 0"/><path d="M3 9.5a13 13 0 0 1 18 0"/></svg>
           </span>
-          <h2>Tailscale</h2>
+          <h2>Remote Access</h2>
         </div>
       </div>
-      <div class="rows" id="tailscaleBody"></div>
+      <div class="rows remote-access-rows">
+        <div class="rows" id="tailscaleBody"></div>
+        <div class="row" data-key="sunshine">
+          <div class="row-main">
+            <div class="row-content">
+              <div class="lead-line"><span class="name-text" title="Sunshine">Sunshine</span></div>
+            </div>
+            <div class="row-actions">
+              <button class="btn-pill tone-restart" onclick="restartSunshine(this)" title="Restart Sunshine streaming service">Restart</button>
+            </div>
+            <span class="disclosure-spacer"></span>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- Apps -->
@@ -1217,6 +1235,11 @@
     }
 
     // ---------- restart machine ----------
+    async function restartSunshine(button) {
+      if (!confirm("Restart Sunshine?\n\nAny active Moonlight streaming session will disconnect. You can reconnect after the service restarts.")) return;
+      await action(button, "/api/system/sunshine/restart", undefined, 600, true);
+    }
+
     async function restartMachine() {
       if (!confirm("Restart this machine?\n\nAll running services will stop. The machine will reboot in 10 seconds.")) return;
       try {

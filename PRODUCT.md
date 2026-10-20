@@ -18,7 +18,7 @@ App Dashboard is a personal control panel for one Windows machine: start/stop/re
 ## Operating Context
 - Runs as a small FastAPI server (`main.py`) on the same Windows box it manages, on port 8765, exposed publicly through an nginx-proxy-manager + DuckDNS tunnel at custom subdomains (e.g. bridgenbrain.duckdns.org).
 - Single-page client (`templates/index.html`), fully client-rendered, polls `/api/apps`, `/api/docker`, `/api/vmware`, `/api/tailscale/status` every 10–15s.
-- Sections: Tailscale status, Apps (with a Status/Config tab toggle), Docker Containers (with a keyword filter), VMware VMs. A header holds a manual refresh button and a "restart machine" action.
+- Sections: Remote Access (Tailscale connectivity and Sunshine restart), Apps (with a Status/Config tab toggle), Docker Containers (with a keyword filter), VMware VMs. A header holds a manual refresh button and a "restart machine" action.
 - Used both from a desktop browser on the LAN and remotely over the internet (hence the duckdns domains) — so it needs to read cleanly on both desktop and mobile viewports.
 - "Registered apps" are the owner's own side projects/tools (stock-pattern, matchday, vibecheck, skill-finder, powerpoint-generator, flight-deal-watcher, pourover-guide, asteroid-impact-simulation, app-dashboard itself, etc.), each with a name, optional description, run command, health check, and local path.
 
