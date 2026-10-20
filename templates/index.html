@@ -507,7 +507,17 @@
       .row-actions { flex-wrap: wrap; justify-content: flex-start; margin-left: 0; flex: 1 1 100%; order: 3; }
       .app-row .row-actions { flex: 1 1 100%; }
       .row-detail { padding-left: 16px; }
-      .remote-access-rows .row-main { gap: 6px; }
+      .remote-access-rows .row-main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-rows: 30px auto;
+        gap: 6px;
+      }
+      .remote-access-rows .row-content { grid-area: 1 / 1; }
+      .remote-access-rows .pill-badge { grid-area: 1 / 2; }
+      .remote-access-rows .row-actions { grid-area: 2 / 1; }
+      .remote-access-rows .disclosure,
+      .remote-access-rows .disclosure-spacer { grid-area: 2 / 2; justify-self: end; }
       .remote-access-rows .row { padding: 6px 10px; }
     }
   </style>
