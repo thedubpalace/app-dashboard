@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from services.process_window import hidden_startupinfo
 from typing import Any
 
 _NO_WINDOW = 0
@@ -21,7 +22,7 @@ def _run(args: list[str], timeout: int = DOCKER_TIMEOUT) -> subprocess.Completed
         capture_output=True,
         text=True,
         timeout=timeout,
-        creationflags=_NO_WINDOW,
+        startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW,
     )
 
 

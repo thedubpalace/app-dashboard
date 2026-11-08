@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import socket
 import subprocess
+from services.process_window import hidden_startupinfo
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -69,7 +70,7 @@ def _read_confs() -> list[str]:
             capture_output=True,
             text=True,
             timeout=DOCKER_TIMEOUT,
-            creationflags=_NO_WINDOW,
+            startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$VmrunPath = "C:\Program Files\VMware\VMware Workstation\vmrun.exe",
-    [string]$VmxPath = 'D:\Users\ADMIN\Documents\Virtual Machines\home-assistant.vmx'
+    [string]$VmxPath = 'D:\Virtual Machines\Home Assistant\home-assistant.vmx'
 )
 
 $ErrorActionPreference = "Stop"

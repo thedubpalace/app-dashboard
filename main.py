@@ -11,6 +11,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+from services.process_window import hidden_startupinfo
 import sys
 from pathlib import Path
 from typing import Any
@@ -393,7 +394,7 @@ def _start_local(entry: dict[str, Any]) -> str | None:
         subprocess.Popen(
             args,
             cwd=cwd,
-            creationflags=_NO_WINDOW,
+            startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
@@ -401,7 +402,7 @@ def _start_local(entry: dict[str, Any]) -> str | None:
     except FileNotFoundError:
         # Fall back to shell so PATH-resolved commands (e.g. uvicorn) work.
         try:
-            subprocess.Popen(run_cmd, cwd=cwd, shell=True, creationflags=_NO_WINDOW)
+            subprocess.Popen(run_cmd, cwd=cwd, shell=True, startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW)
         except Exception as exc:  # noqa: BLE001
             return str(exc)
     except Exception as exc:  # noqa: BLE001
@@ -421,7 +422,7 @@ def _start_container(entry: dict[str, Any], container: str) -> dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=180,
-            creationflags=_NO_WINDOW,
+            startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "error": str(exc)}
@@ -465,7 +466,7 @@ async def app_restart(name: str) -> JSONResponse:
     try:
         subprocess.Popen(
             [sys.executable, "-c", script],
-            creationflags=_NO_WINDOW | _NEW_GROUP,
+            startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW | _NEW_GROUP,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
@@ -479,6 +480,11 @@ async def app_restart(name: str) -> JSONResponse:
 def _build_restart_script(port: int | None, token: str | None, run_cmd: str, cwd: str | None) -> str:
     return f"""
 import time, subprocess, socket, shlex
+startupinfo = None
+if hasattr(subprocess, 'STARTUPINFO'):
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
 from pathlib import Path
 import psutil
 
@@ -521,9 +527,9 @@ try:
 except Exception:
     args = run_cmd.split()
 try:
-    subprocess.Popen(args, cwd=cwd, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    subprocess.Popen(args, cwd=cwd, startupinfo=startupinfo, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
 except FileNotFoundError:
-    subprocess.Popen(run_cmd, cwd=cwd, shell=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    subprocess.Popen(run_cmd, cwd=cwd, shell=True, startupinfo=startupinfo, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
 """
 
 
@@ -765,14 +771,14 @@ async def docker_fix() -> JSONResponse:
 
     def _restart():
         # Kill all Docker Desktop processes
-        subprocess.run(["taskkill", "/F", "/IM", "Docker Desktop.exe"], capture_output=True, creationflags=_NO_WINDOW)
-        subprocess.run(["taskkill", "/F", "/IM", "com.docker.backend.exe"], capture_output=True, creationflags=_NO_WINDOW)
+        subprocess.run(["taskkill", "/F", "/IM", "Docker Desktop.exe"], capture_output=True, startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW)
+        subprocess.run(["taskkill", "/F", "/IM", "com.docker.backend.exe"], capture_output=True, startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW)
         # Reset WSL so the Linux engine starts clean
-        subprocess.run(["wsl", "--shutdown"], capture_output=True, creationflags=_NO_WINDOW)
+        subprocess.run(["wsl", "--shutdown"], capture_output=True, startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW)
         time.sleep(3)
         subprocess.Popen(
             [_DOCKER_DESKTOP],
-            creationflags=_NO_WINDOW,
+            startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
@@ -806,7 +812,7 @@ try {
     try:
         result = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True, text=True, timeout=45, creationflags=_NO_WINDOW,
+            capture_output=True, text=True, timeout=45, startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW,
         )
         if result.returncode:
             return {"ok": False, "error": "Could not restart Sunshine. Run setup-sunshine-control.ps1 once as Administrator. " + (result.stderr.strip() or "Service control failed.")}
@@ -828,7 +834,7 @@ async def system_restart() -> JSONResponse:
     try:
         subprocess.Popen(
             ["shutdown", "/r", "/t", "10"],
-            creationflags=_NO_WINDOW,
+            startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -881,7 +887,7 @@ def _tailscale_status() -> dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=10,
-            creationflags=_NO_WINDOW,
+            startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW,
         )
     except (FileNotFoundError, OSError, subprocess.SubprocessError):
         return {"connected": False, "ip": None, "hostname": None}
@@ -921,7 +927,7 @@ async def tailscale_toggle() -> JSONResponse:
                 capture_output=True,
                 text=True,
                 timeout=30,
-                creationflags=_NO_WINDOW,
+                startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW,
             )
         except (FileNotFoundError, OSError, subprocess.SubprocessError):
             pass

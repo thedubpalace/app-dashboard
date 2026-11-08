@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import glob
 import subprocess
+from services.process_window import hidden_startupinfo
 import time
 from pathlib import Path
 from typing import Any
@@ -40,7 +41,7 @@ def _run(vmrun: str, args: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         timeout=VMRUN_TIMEOUT,
-        creationflags=_NO_WINDOW,
+        startupinfo=hidden_startupinfo(), creationflags=_NO_WINDOW,
     )
 
 

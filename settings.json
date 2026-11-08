@@ -13,14 +13,16 @@
       "team-pulse",
       "asteroid",
       "daddy",
-      "flood"
+      "flood",
+      "merge-workbench",
+      "vibecheck"
     ]
   },
   "vmware": {
     "managed": [
       {
         "name": "home-assistant",
-        "vmx": "D:/Users/ADMIN/Documents/Virtual Machines/home-assistant.vmx",
+        "vmx": "D:/Virtual Machines/Home Assistant/home-assistant.vmx",
         "desiredRunning": true,
         "healthUrl": "http://192.168.1.131:8123/api/",
         "healthExpectedStatus": 401
@@ -28,6 +30,12 @@
     ]
   },
   "apps": {
+    "agent-memory": {
+      "containerName": "agent-memory",
+      "devCmd": "node server.js",
+      "mode": "docker",
+      "dockerStartCmd": "docker compose up -d --no-build"
+    },
     "flight-deal-watcher": {
       "containerName": "flight-deal-watcher",
       "devCmd": "C:/Users/thedu/code/flight-deal-watcher/.venv-local/Scripts/python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 5007",
@@ -57,11 +65,22 @@
     "skill-finder": {
       "devCmd": "C:/Users/thedu/code/skill-finder/.venv/Scripts/python.exe -m uvicorn main:app --host 0.0.0.0 --port 5002"
     },
+    "matchday": {
+      "mode": "docker"
+    },
     "stock-pattern": {
       "devCmd": "C:/Users/thedu/code/stock-pattern/.venv/Scripts/python.exe main.py --ticker SCB.BK --top 10 --sort avg_return"
     },
     "vibecheck": {
-      "devCmd": "C:/Users/thedu/code/vibecheck/.venv/Scripts/python.exe agent.py --mode weekly"
+      "containerName": "vibecheck",
+      "devCmd": "C:/Users/thedu/code/vibecheck/.venv/Scripts/python.exe -m uvicorn webapp.app:app --host 127.0.0.1 --port 5021",
+      "mode": "docker",
+      "dockerStartCmd": "docker compose up -d --no-build"
+    },
+    "merge-workbench": {
+      "containerName": "merge-workbench",
+      "mode": "docker",
+      "dockerStartCmd": "docker compose -f deploy/compose.yaml up -d --no-build"
     },
     "temporal-service-orchestrator": {
       "dockerStartCmd": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/Users/thedu/code/temporal-service-orchestrator/deploy/start-stack.ps1"
