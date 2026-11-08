@@ -58,6 +58,9 @@ To run the UI in Docker, copy the token into `.env` as `APP_AGENT_TOKEN=...`,
 stop the native dashboard on port 8765, and run `docker compose up -d --build`.
 Docker Desktop reaches an agent bound to `127.0.0.1` through
 `host.docker.internal`, so the agent does not need to listen on the LAN.
+If the `App Dashboard Health Watchdog` task (in `infra/dashboard-watchdog`)
+is installed, reinstall it with `-DashboardMode Docker` so it restarts the
+container instead of starting a native server on port 8765.
 
 ### Reconciler
 
