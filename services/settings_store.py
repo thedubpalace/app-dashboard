@@ -41,6 +41,15 @@ def set_app_mode(name: str, mode: str) -> None:
     save(settings)
 
 
+def update_app_desired_running(name: str, desired_running: bool) -> None:
+    """Record an intentional start/stop for apps that opted into reconciling."""
+    settings = load()
+    entry = settings.get("apps", {}).get(name) if isinstance(settings.get("apps"), dict) else None
+    if isinstance(entry, dict) and "desiredRunning" in entry and entry["desiredRunning"] is not desired_running:
+        entry["desiredRunning"] = desired_running
+        save(settings)
+
+
 def docker_filter(settings: dict[str, Any] | None = None) -> list[str]:
     return (settings if settings is not None else load()).get("docker", {}).get("filter", [])
 

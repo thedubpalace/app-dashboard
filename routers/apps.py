@@ -7,7 +7,7 @@ from typing import Any, Callable
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from services import agent_sessions, app_control, app_links, app_modes, app_registry
+from services import agent_sessions, app_control, app_links, app_modes, app_registry, settings_store
 
 router = APIRouter(prefix="/api/apps")
 
@@ -25,11 +25,17 @@ def _apps_with_sessions() -> list[dict[str, Any]]:
     return result
 
 
-async def _control(name: str, action: Callable[..., app_control.Result], *args: Any) -> JSONResponse:
+async def _control(
+    name: str, action: Callable[..., app_control.Result], *args: Any, desired_running: bool | None = None
+) -> JSONResponse:
     entry = app_registry.get_app(name)
     if not entry:
         return _unknown(name)
     payload, status_code = await asyncio.to_thread(action, entry, *args)
+    if desired_running is not None and payload.get("ok"):
+        # A dashboard stop is intentional, so the reconciler must not undo it;
+        # starting again re-enables auto-recovery. Mirrors VMware.
+        settings_store.update_app_desired_running(name, desired_running)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -40,17 +46,17 @@ async def apps() -> list[dict[str, Any]]:
 
 @router.post("/{name}/start")
 async def app_start(name: str) -> JSONResponse:
-    return await _control(name, app_control.start)
+    return await _control(name, app_control.start, desired_running=True)
 
 
 @router.post("/{name}/stop")
 async def app_stop(name: str) -> JSONResponse:
-    return await _control(name, app_control.stop)
+    return await _control(name, app_control.stop, desired_running=False)
 
 
 @router.post("/{name}/restart")
 async def app_restart(name: str) -> JSONResponse:
-    return await _control(name, app_control.restart)
+    return await _control(name, app_control.restart, desired_running=True)
 
 
 @router.post("/{name}/mode")

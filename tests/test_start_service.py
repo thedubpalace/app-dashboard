@@ -9,19 +9,23 @@ import unittest
 
 @unittest.skipUnless(shutil.which('powershell.exe'), 'Windows launcher tests')
 class StartServiceTests(unittest.TestCase):
+    script = 'start-service.ps1'
+    running_content = '<title>App Dashboard</title>'
+
     def launch(self, runtime=None, import_exit=0, already_running=False):
         with tempfile.TemporaryDirectory() as directory:
-            launcher = Path(directory) / 'start-service.ps1'
-            shutil.copyfile(Path(__file__).resolve().parents[1] / 'start-service.ps1', launcher)
+            launcher = Path(directory) / self.script
+            shutil.copyfile(Path(__file__).resolve().parents[1] / self.script, launcher)
             if runtime is not None:
                 (launcher.parent / '.env.runtime').write_text(runtime, encoding='utf-8')
             environment = os.environ.copy()
-            for name in ('APP_DASHBOARD_HOST', 'APP_DASHBOARD_PORT', 'VEDA_DASHBOARD_HOST', 'VEDA_DASHBOARD_PORT'):
+            for name in ('APP_DASHBOARD_HOST', 'APP_DASHBOARD_PORT', 'VEDA_DASHBOARD_HOST', 'VEDA_DASHBOARD_PORT',
+                         'APP_AGENT_HOST', 'APP_AGENT_PORT'):
                 environment.pop(name, None)
             # Stub only Python: exercise the real PowerShell launcher without
             # starting a server or depending on a developer's environment.
             command = (
-                ("function Invoke-WebRequest { [pscustomobject]@{StatusCode=200;Content='<title>App Dashboard</title>'} }; "
+                ("function Invoke-WebRequest { [pscustomobject]@{StatusCode=200;Content='" + self.running_content + "'} }; "
                  if already_running else "function Invoke-WebRequest { throw 'No server listening' }; ")
                 + "function python { if ($args[0] -eq '-c') { $global:LASTEXITCODE = "
                 + str(import_exit)
@@ -59,4 +63,31 @@ class StartServiceTests(unittest.TestCase):
         result = self.launch(already_running=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('already running at http://127.0.0.1:8765/', result.stdout)
+        self.assertNotIn('uvicorn', result.stdout)
+
+
+class StartAgentTests(StartServiceTests):
+    script = 'start-agent.ps1'
+    running_content = '{"ok":true}'
+
+    def test_missing_optional_env_uses_defaults(self):
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ['-m', 'uvicorn', 'agent:app', '--host', '127.0.0.1', '--port', 8766])
+
+    def test_quoted_runtime_values_and_current_names_take_precedence(self):
+        result = self.launch('APP_AGENT_HOST="0.0.0.0"\nAPP_AGENT_PORT=\'9877\'\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)[-4:], ['--host', '0.0.0.0', '--port', 9877])
+
+    def test_invalid_port_fails_before_starting_python(self):
+        result = self.launch('APP_AGENT_PORT=70000\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('APP_AGENT_PORT must be a number from 1 to 65535', result.stderr)
+        self.assertEqual(result.stdout, '')
+
+    def test_running_dashboard_does_not_start_a_second_server(self):
+        result = self.launch(already_running=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('agent is already running at http://127.0.0.1:8766/healthz', result.stdout)
         self.assertNotIn('uvicorn', result.stdout)

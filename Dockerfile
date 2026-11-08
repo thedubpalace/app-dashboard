@@ -1,19 +1,7 @@
 FROM python:3.12-slim
 
-# Install docker CLI so docker_service.py can shell out to `docker`
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates \
-    && install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/debian/gpg \
-         -o /etc/apt/keyrings/docker.asc \
-    && chmod a+r /etc/apt/keyrings/docker.asc \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-         https://download.docker.com/linux/debian bookworm stable" \
-         > /etc/apt/sources.list.d/docker.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli \
-    && rm -rf /var/lib/apt/lists/*
-
+# UI only: the page plus an /api relay to the host agent (agent.py), which
+# must run natively on the Windows host. See docker-compose.yml.
 WORKDIR /app
 
 COPY requirements.txt .
@@ -21,8 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Path to the shared app registry — override at runtime via -e or docker-compose
-ENV APP_DASHBOARD_REGISTRY=/veda/.veda/projects/registry.json
+ENV APP_AGENT_URL=http://host.docker.internal:8766
 
 EXPOSE 8765
 

@@ -25,9 +25,52 @@ The existing shared registry stays in place. `VEDA_DASHBOARD_HOST`,
 `VEDA_DASHBOARD_PORT`, and `VEDA_REGISTRY` remain supported as fallbacks;
 the new variables take precedence.
 
-For Docker, the registry defaults to `/veda/.veda/projects/registry.json`.
-Mount the existing registry there or set `APP_DASHBOARD_REGISTRY` to its
-container path.
+## Host agent (optional split)
+
+By default one process serves the page and acts on the host. The dashboard
+can instead be split in two:
+
+- **Host agent** (`agent.py`, port `8766`) runs natively and does everything
+  that touches the host. It requires a bearer token on every `/api` route and
+  runs the reconciler.
+- **Dashboard UI** (`main.py` with `APP_AGENT_URL` set) serves the page and
+  relays `/api` to the agent, adding the token server side. It can run
+  natively or in Docker. If the agent is down, the page still loads and API
+  calls fail with `agentOffline: true`.
+
+Start the agent with `start-agent.ps1`. To run it at logon and restart it if it
+exits, run `install-agent-task.ps1` once (`-Remove` deletes the task). It runs
+as a scheduled task in your session, not as a Windows service, because it opens
+terminals and starts dev servers on your desktop.
+
+| Variable | Default | Used by |
+| --- | --- | --- |
+| `APP_AGENT_HOST` | `127.0.0.1` | agent |
+| `APP_AGENT_PORT` | `8766` | agent |
+| `APP_AGENT_TOKEN` | contents of `.agent-token` | agent, UI |
+| `APP_AGENT_URL` | unset (all-in-one) | UI |
+
+On first start the agent writes a random token to `.agent-token` (git-ignored).
+A native UI on the same host reads it from there. For the UI to use the agent
+natively, add `APP_AGENT_URL=http://127.0.0.1:8766` to `.env.runtime`.
+
+To run the UI in Docker, copy the token into `.env` as `APP_AGENT_TOKEN=...`,
+stop the native dashboard on port 8765, and run `docker compose up -d --build`.
+Docker Desktop reaches an agent bound to `127.0.0.1` through
+`host.docker.internal`, so the agent does not need to listen on the LAN.
+
+### Reconciler
+
+The reconciler checks every 60 seconds. It runs in the agent, or in the
+all-in-one process when there is no agent.
+
+- VMs with `"desiredRunning": true` under `vmware.managed` are started if
+  they are down.
+- Apps opt in with `"desiredRunning": true` under `apps.<name>`. A desired app
+  that is down is started, with at most one retry per app every 5 minutes.
+  The dashboard's Stop button sets it to `false` so a deliberate stop sticks,
+  and Start or Restart sets it back to `true`. Apps without the key are never
+  started automatically.
 
 The aggregate `/api/status` endpoint returns `apps`, `docker`, and `vmware`.
 Consumers of its former `veda` field should use `apps`. The individual
@@ -49,13 +92,12 @@ the `vibecheck` Docker container (web UI + MCP at `/vibecheck/`).
 
 ## Layout
 
-- `main.py` builds the FastAPI app and starts the VMware watchdog.
+- `main.py` is the dashboard: the page, plus `/api` either in-process or
+  relayed to the agent.
+- `agent.py` is the host agent: `/api` behind a token, plus the reconciler.
 - `routers/` holds the HTTP routes. They only validate requests and relay results.
 - `services/` holds everything that acts on the host: processes, Docker,
   VMware, Nginx Proxy Manager, Sunshine, Tailscale, and `settings.json`.
-
-Keeping host side effects out of `routers/` lets `services/` run as a separate
-host agent later, with the dashboard UI calling it over HTTP.
 
 ## Verify
 

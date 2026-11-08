@@ -1,0 +1,14 @@
+# Dashboard UI in a container; the host agent runs natively (start-agent.ps1).
+# APP_AGENT_TOKEN must match the agent: copy it from .agent-token into .env.
+services:
+  app-dashboard:
+    build: .
+    container_name: app-dashboard
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      APP_AGENT_URL: http://host.docker.internal:8766
+      APP_AGENT_TOKEN: ${APP_AGENT_TOKEN:?copy .agent-token into .env as APP_AGENT_TOKEN}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
