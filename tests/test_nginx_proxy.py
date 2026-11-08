@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-import main
+from services import app_links, settings_store
 from services import nginx_proxy
 
 
@@ -66,10 +66,10 @@ location / {
 
 class AppLinkTests(unittest.TestCase):
     def attach(self, app, routes, local=None):
-        with patch.object(main.nginx_proxy, 'public_routes', return_value=routes), \
-                patch.object(main.nginx_proxy, 'public_urls', return_value=local or {}), \
-                patch.object(main, '_load_settings', return_value={}):
-            main._attach_public_urls([app])
+        with patch.object(nginx_proxy, 'public_routes', return_value=routes), \
+                patch.object(nginx_proxy, 'public_urls', return_value=local or {}), \
+                patch.object(settings_store, 'load', return_value={}):
+            app_links.attach_public_urls([app])
         return app.get('url')
 
     def test_public_health_url_matches_the_most_specific_proxy_path(self):

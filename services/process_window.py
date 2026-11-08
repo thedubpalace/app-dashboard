@@ -1,6 +1,9 @@
 """Window startup settings for non-interactive Windows subprocesses."""
 import subprocess
 
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+NEW_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
 
 def hidden_startupinfo():
     """Hide the initial window as well as suppressing console allocation."""

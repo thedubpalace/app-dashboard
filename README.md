@@ -47,6 +47,16 @@ Stock Pattern is a finite CLI job. Its process normally exits when its report is
 complete; a stopped indicator does not imply a startup failure. VibeCheck runs as
 the `vibecheck` Docker container (web UI + MCP at `/vibecheck/`).
 
+## Layout
+
+- `main.py` builds the FastAPI app and starts the VMware watchdog.
+- `routers/` holds the HTTP routes. They only validate requests and relay results.
+- `services/` holds everything that acts on the host: processes, Docker,
+  VMware, Nginx Proxy Manager, Sunshine, Tailscale, and `settings.json`.
+
+Keeping host side effects out of `routers/` lets `services/` run as a separate
+host agent later, with the dashboard UI calling it over HTTP.
+
 ## Verify
 
 The **Remote Access** section groups Tailscale and Sunshine controls.

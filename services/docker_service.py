@@ -138,6 +138,21 @@ def restart(name: str) -> dict[str, Any]:
     return _control("restart", name, timeout=DOCKER_RESTART_TIMEOUT)
 
 
+def apply_filter(result: dict[str, Any], filters: list[str]) -> dict[str, Any]:
+    """Keep only containers whose name contains one of the filter keywords."""
+    if not isinstance(result, dict) or "containers" not in result:
+        return result
+    result = dict(result)
+    keywords = [s.lower() for s in filters if s.strip()]
+    if keywords:
+        result["containers"] = [
+            c for c in result["containers"] if any(kw in (c.get("name") or "").lower() for kw in keywords)
+        ]
+    result["filtered"] = bool(filters)
+    result["filterList"] = filters
+    return result
+
+
 def _control(action: str, name: str, timeout: int = DOCKER_TIMEOUT) -> dict[str, Any]:
     try:
         proc = _run([action, name], timeout=timeout)
