@@ -25,6 +25,51 @@ The existing shared registry stays in place. `VEDA_DASHBOARD_HOST`,
 `VEDA_DASHBOARD_PORT`, and `VEDA_REGISTRY` remain supported as fallbacks;
 the new variables take precedence.
 
+## Sign-in, roles and audit
+
+Every `/api` call needs a signed session cookie; every state-changing call also
+needs the session's CSRF token in `X-CSRF-Token`, a same-origin `Origin` (when
+the browser sends one) and a role that holds the route's permission. The table
+is `services/access_policy.py`; `services/access_guard.py` enforces it before
+routing, so it also covers the `/api` relay to the host agent. Routes missing
+from the table are denied (403) even for Admin, and
+`tests/test_access_policy.py` fails while any registered route has no rule.
+
+Public without a session: the page shells `/` and `/review` (they only render
+the sign-in form), `POST /api/login`, `GET /api/session` and
+`GET /api/control/readiness` (booleans for health probes).
+
+| Role | Permissions |
+| --- | --- |
+| viewer | read inventory (apps, Docker, VMware, Tailscale, settings) |
+| operator | viewer + start/stop/restart/mode of registered resources, Docker filter |
+| admin | operator + Claude/Codex terminals, host reboot, Sunshine, Docker repair, Tailscale |
+
+`DASHBOARD_USER_ROLES=alice:admin,bob:viewer` maps users to roles. Without a
+mapping the configured `VEDA_DASHBOARD_USERNAME` is Admin and anyone else is a
+Viewer. `/review` additionally needs Admin plus `REVIEW_ALLOWLIST`.
+
+Each authorised mutation writes a `requested` record before it runs (if that
+fails, nothing runs and the call answers 503) and a `result` record with the
+HTTP status to `.runtime/audit.jsonl`. Every 401/403 and failed sign-in goes to
+`.runtime/security.log`. Neither holds bodies, cookies, tokens or passwords.
+
+Settings (in the ignored `.env.runtime`; see `.env.example`):
+
+| Variable | Purpose |
+| --- | --- |
+| `VEDA_DASHBOARD_USERNAME`, `VEDA_DASHBOARD_PASSWORD` | the dashboard account (sign-in is disabled without a password) |
+| `VEDA_DASHBOARD_SESSION_SECRET` | HMAC key for session cookies (32+ random bytes) |
+| `DASHBOARD_COOKIE_SECURE` | `1` when browsers reach the dashboard over HTTPS |
+| `DASHBOARD_LOGIN_RATE_ATTEMPTS`, `DASHBOARD_LOGIN_RATE_WINDOW_SECONDS` | sign-in throttle (default 5 per 900 s) |
+| `DASHBOARD_ALLOWED_ORIGINS` | extra `host[:port]` values accepted as `Origin` |
+| `DASHBOARD_AUDIT_LOG`, `DASHBOARD_SECURITY_LOG` | log paths |
+| `TEMPORAL_ORCHESTRATOR_URL`, `DASHBOARD_SERVICE_TOKEN`, `DASHBOARD_ACTOR_SECRET` | signed machine channel to temporal-service-orchestrator, used by readiness |
+| `APP_DASHBOARD_RECONCILER` | `0` disables the reconciler (staging copies next to the live service) |
+
+`/api/control/readiness` always answers 200; `ok` is true only when the
+orchestrator's registry sync is `ready` and Temporal and its host worker are up.
+
 ## Host agent (optional split)
 
 By default one process serves the page and acts on the host. The dashboard
@@ -120,3 +165,21 @@ This grants that account query-status, start, and stop permissions for Sunshine
 only. The dashboard itself does not need to run as Administrator.
 
 Run `python -m unittest discover -s tests -v`.
+
+## Requirement review (`/review`)
+
+Human gate for Veda requirements (REQ-001..018 in `.veda/projects/app-dashboard/requirements.md`).
+
+- Access: signed-in dashboard session, role Admin and listed in `REVIEW_ALLOWLIST` (default `thedubpalace`).
+  Mutations need the `X-CSRF-Token`. 401/403 attempts go to `.runtime/security.log`.
+- Tracker: `REVIEW_TRACKER=mock|github` (default `mock`).
+  - `mock`: cards are parsed from the real `requirements.md` (`REVIEW_MOCK_PROJECTS`, default
+    `app-dashboard`; projects dir from `REVIEW_VEDA_PROJECTS_DIR` or the registry folder). Status,
+    comments, idempotency, gate result and audit live in `.runtime/review-sandbox/` (ignored).
+    `registry.json` is never written; the page shows what reconcile *would* set and a banner that
+    the data is simulated. Admins get a debug panel to simulate GitHub/token/two-phase/conflict states.
+  - `github`: `GitHubProjectTracker` skeleton only. It fails closed (`token_missing`) until implemented.
+- Token (github mode, not used yet): `REVIEW_GITHUB_TOKEN` in the ignored `.env.runtime`, plus
+  `REVIEW_GITHUB_OWNER`, `REVIEW_GITHUB_PROJECT_NUMBER`, `REVIEW_GITHUB_REPO`. Never commit it; it is
+  never sent to the browser.
+- Other settings: `REVIEW_REQUIRED_APPROVALS` (default 1), `REVIEW_RUNTIME_DIR`, `REVIEW_AUDIT_PATH`.

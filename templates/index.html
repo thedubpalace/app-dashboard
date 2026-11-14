@@ -520,9 +520,31 @@
       .remote-access-rows .disclosure-spacer { grid-area: 2 / 2; justify-self: end; }
       .remote-access-rows .row { padding: 6px 10px; }
     }
+    /* Sign-in gate (session + CSRF are required for every /api call) */
+    .hidden { display: none !important; }
+    .auth-gate { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 20px; background: rgba(2,8,17,.74); backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px); }
+    .auth-card { width: min(380px, 100%); padding: 24px; border: 1px solid var(--glass-border); border-radius: var(--radius-panel); background: var(--glass-fill); box-shadow: var(--shadow-panel); box-sizing: border-box; }
+    .auth-card h2 { margin: 0 0 6px; font-size: 22px; color: var(--label-primary); }
+    .auth-card p { color: var(--label-secondary); margin: 0 0 18px; font-size: 13px; }
+    .auth-card .modal-input { width: 100%; margin: 5px 0; box-sizing: border-box; }
+    .auth-card .btn-modal { width: 100%; margin-top: 12px; min-height: 44px; }
+    .login-error { margin: 10px 0 2px; padding: 9px 12px; border-radius: 12px; background: rgba(255,69,58,.14); color: #ffd4d1; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+    .review-link { display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: var(--radius-pill); border: 1px solid var(--glass-border); background: var(--glass-fill); color: var(--label-primary); font-size: 12px; font-weight: 600; text-decoration: none; white-space: nowrap; box-shadow: var(--shadow-float); box-sizing: border-box; }
+    .review-link:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(10,132,255,0.55), var(--shadow-float); }
+    @media (max-width: 420px) { .review-link { max-width: 120px; overflow: hidden; text-overflow: ellipsis; } }
   </style>
 </head>
 <body>
+
+  <div id="authGate" class="auth-gate hidden">
+    <form class="auth-card" onsubmit="loginDashboard(event)">
+      <h2>App Dashboard</h2><p>Sign in to see and control this host.</p>
+      <input id="loginUser" class="modal-input" autocomplete="username" placeholder="Username" aria-label="Username" />
+      <input id="loginPassword" class="modal-input" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password" />
+      <div id="loginError" class="login-error hidden" role="alert" aria-live="assertive" aria-atomic="true"></div>
+      <button id="loginSubmit" class="btn-modal primary" type="submit">Sign in</button>
+    </form>
+  </div>
 
   <!-- Toasts -->
   <div id="toasts"></div>
@@ -533,6 +555,7 @@
     <header class="top">
       <h1>App Dashboard</h1>
       <div class="header-actions">
+        <a id="reviewLink" class="hidden" href="/review">Requirement review</a>
         <button id="detailsBtn" class="icon-btn" onclick="toggleDetails()" title="Show details" aria-label="Show details" aria-pressed="false">
           <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
             <path d="M2 3h8M2 6h8M2 9h5"/>
@@ -542,6 +565,11 @@
           <svg id="refreshIcon" width="15" height="15" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M10.5 6A4.5 4.5 0 1 1 8 2.1"/>
             <polyline points="8,1 8,3 10,3"/>
+          </svg>
+        </button>
+        <button id="logoutBtn" class="icon-btn" onclick="logoutDashboard()" title="Sign out" aria-label="Sign out">
+          <svg width="15" height="15" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4.5 1.5H2.5a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2M8 8.5 10.5 6 8 3.5M10.5 6H4.5"/>
           </svg>
         </button>
         <button class="icon-btn danger" onclick="restartMachine()" title="Restart machine" aria-label="Restart machine">
@@ -643,6 +671,81 @@
   </div>
 
   <script>
+    // ---------- auth ----------
+    // Every /api call needs a signed session; mutations also send the CSRF token.
+    // A 401 from any call brings the sign-in gate back.
+    let csrfToken = "";
+    let _authed = false;
+    const _nativeFetch = window.fetch.bind(window);
+    window.fetch = async (input, init = {}) => {
+      const url = typeof input === "string" ? input : input.url;
+      const method = String(init.method || (typeof input === "string" ? "GET" : input.method) || "GET").toUpperCase();
+      const isApi = url.startsWith("/api/");
+      if (isApi && method !== "GET" && method !== "HEAD") {
+        const headers = new Headers(init.headers || {});
+        if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
+        init = { ...init, headers, credentials: "same-origin" };
+      }
+      const res = await _nativeFetch(input, init);
+      if (isApi && res.status === 401 && url !== "/api/login" && url !== "/api/session") {
+        let code = ""; try { code = (await res.clone().json()).code || ""; } catch (_) {}
+        showAuthGate(code === "session_expired" ? "Your session expired. Sign in again." : "");
+      }
+      return res;
+    };
+    function showAuthGate(message) {
+      _authed = false; csrfToken = "";
+      document.getElementById("reviewLink").className = "hidden";
+      const error = document.getElementById("loginError");
+      error.textContent = message || ""; error.classList.toggle("hidden", !message);
+      document.getElementById("authGate").classList.remove("hidden");
+      setTimeout(() => document.getElementById("loginUser").focus(), 0);
+    }
+    function onSignedIn(token) {
+      csrfToken = token || ""; _authed = true;
+      document.getElementById("authGate").classList.add("hidden");
+      loadTailscale(); refreshAll(); loadReviewLink();
+    }
+    async function loginDashboard(event) {
+      event.preventDefault();
+      const submit = document.getElementById("loginSubmit");
+      const error = document.getElementById("loginError");
+      error.textContent = ""; error.classList.add("hidden"); submit.disabled = true;
+      try {
+        const res = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: loginUser.value, password: loginPassword.value }) });
+        let data = {}; try { data = await res.json(); } catch (_) {}
+        if (!res.ok) {
+          error.textContent = res.status === 429 ? "Too many attempts. Wait before trying again." : res.status === 401 ? "Sign in failed. Check your username and password." : (data.error || "Sign in failed.");
+          error.classList.remove("hidden"); return;
+        }
+        loginPassword.value = "";
+        onSignedIn(data.csrfToken);
+      } catch (_) {
+        error.textContent = "Unable to reach the dashboard. Check the connection and try again.";
+        error.classList.remove("hidden");
+      } finally { submit.disabled = false; }
+    }
+    async function logoutDashboard() {
+      try { await fetch("/api/logout", { method: "POST" }); } catch (_) {}
+      initSkeletons();
+      showAuthGate("");
+    }
+    async function ensureSession() {
+      const data = await fetch("/api/session").then(r => r.json()).catch(() => ({}));
+      if (data.authenticated) onSignedIn(data.csrfToken);
+      else showAuthGate("");
+    }
+    async function loadReviewLink() {
+      // Shown only to reviewers: the summary endpoint answers 403 for everyone else.
+      try {
+        const res = await fetch("/api/review/summary"); if (!res.ok) return;
+        const data = await res.json(), link = document.getElementById("reviewLink");
+        link.textContent = typeof data.pending === "number" ? `Requirement review (${data.pending})` : "Requirement review";
+        link.setAttribute("aria-label", typeof data.pending === "number" ? `Requirement review, ${data.pending} pending` : "Requirement review");
+        link.className = "review-link";
+      } catch (_) {}
+    }
+
     // ---------- helpers ----------
     function el(tag, cls, html) {
       const e = document.createElement(tag);
@@ -1265,6 +1368,7 @@
     let _loadingApps = false, _loadingDocker = false, _loadingVmware = false;
 
     function refreshAll(silent = false) {
+      if (!_authed) return;
       const rb = document.getElementById("refreshBtn");
       const icon = document.getElementById("refreshIcon");
       if (!_loadingApps && !_loadingDocker && !_loadingVmware) {
@@ -1324,6 +1428,7 @@
     }
 
     async function loadTailscale() {
+      if (!_authed) return;
       try {
         const res = await fetch("/api/tailscale/status");
         renderTailscale(await res.json());
@@ -1393,9 +1498,8 @@
 
     try { toggleDetails((localStorage.getItem("app-dashboard.details") ?? localStorage.getItem("veda.details")) === "1"); } catch (_) {}
     initSkeletons();
-    loadTailscale();
+    ensureSession();
     setInterval(loadTailscale, 15000);
-    refreshAll();
     setInterval(refreshAll, 10000);
   </script>
 </body>
