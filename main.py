@@ -12,6 +12,11 @@ Two ways to run it:
 
 Routes live in routers/ and only translate HTTP; everything that touches the
 host (processes, Docker, VMware, Windows services) lives in services/.
+
+Access: services/access_guard.py checks every request against the table in
+services/access_policy.py (signed session, CSRF on mutations, role permission,
+audit record; anything not in the table is denied). Sign-in, readiness and the
+requirement review are served here, never relayed to the agent.
 """
 from __future__ import annotations
 
@@ -23,8 +28,9 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from routers import API_ROUTERS, agent_proxy, pages
-from services import agent_token, reconciler
+from routers import API_ROUTERS, agent_proxy, auth, control, pages
+from services import access_guard, agent_token, reconciler
+from services.review_api import router as review_router
 
 BASE_DIR = Path(__file__).resolve().parent
 AGENT_URL = os.environ.get("APP_AGENT_URL", "").strip() or None
@@ -33,7 +39,9 @@ AGENT_URL = os.environ.get("APP_AGENT_URL", "").strip() or None
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
     # With an agent, keeping the host in its desired state is the agent's job.
-    task = None if AGENT_URL else asyncio.create_task(reconciler.run_forever())
+    # APP_DASHBOARD_RECONCILER=0 turns it off (staging copies next to a live dashboard).
+    enabled = not AGENT_URL and os.environ.get("APP_DASHBOARD_RECONCILER", "1") != "0"
+    task = asyncio.create_task(reconciler.run_forever()) if enabled else None
     try:
         yield
     finally:
@@ -41,9 +49,14 @@ async def lifespan(_: FastAPI):
             task.cancel()
 
 
-app = FastAPI(title="App Dashboard", lifespan=lifespan)
+app = FastAPI(title="App Dashboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+access_guard.install(app)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.include_router(pages.router)
+# Before the agent relay's /api/{path:path} catch-all, so these are never relayed.
+app.include_router(auth.router)
+app.include_router(control.router)
+app.include_router(review_router)
 if AGENT_URL:
     app.include_router(agent_proxy.build_router(AGENT_URL, agent_token.load()))
 else:
