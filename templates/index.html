@@ -545,6 +545,7 @@
         <span id="controlNotice" class="control-notice hidden" role="status"></span>
         <a id="temporalUiLink" target="_blank" rel="noopener noreferrer">Temporal UI</a>
         <a id="temporalAdminLink" target="_blank" rel="noopener noreferrer">Admin console</a>
+        <a id="reviewLink" class="hidden" href="/review">Requirement review</a>
       </nav>
       <div class="header-actions">
         <button id="detailsBtn" class="icon-btn" onclick="toggleDetails()" title="Show details" aria-label="Show details" aria-pressed="false">
@@ -706,6 +707,17 @@
         const data = await res.json(), nav = document.getElementById("secondaryNav");
         temporalUiLink.href = data.temporalUiUrl; temporalAdminLink.href = data.adminUrl;
         temporalAdminLink.classList.toggle("hidden", !data.showAdmin); nav.classList.remove("hidden");
+      } catch (_) {}
+      loadReviewLink();
+    }
+    async function loadReviewLink() {
+      // Shown only to reviewers: the summary endpoint answers 403 for everyone else.
+      try {
+        const res = await fetch("/api/review/summary"); if (!res.ok) return;
+        const data = await res.json(), link = document.getElementById("reviewLink");
+        link.textContent = typeof data.pending === "number" ? `Requirement review (${data.pending})` : "Requirement review";
+        link.setAttribute("aria-label", typeof data.pending === "number" ? `Requirement review, รอรีวิว ${data.pending} ใบ` : "Requirement review");
+        link.classList.remove("hidden");
       } catch (_) {}
     }
     async function loginDashboard(event) {

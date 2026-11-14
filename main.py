@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from services import docker_service, nginx_proxy, veda_apps, vmware_service
+from services.review_api import router as review_router
 from services.dashboard_auth import COOKIE, configured, create_session, credentials_valid, csrf_valid, read_session
 from services.temporal_client import TemporalClientError, client
 
@@ -28,6 +29,7 @@ INDEX_HTML = BASE_DIR / "templates" / "index.html"
 SETTINGS_FILE = BASE_DIR / "settings.json"
 app = FastAPI(title="Veda Dashboard")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+app.include_router(review_router)
 _login_failures: dict[str, list[float]] = {}
 _submission_overrides: dict[str, dict[str, Any]] = {}
 

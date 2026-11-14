@@ -70,3 +70,26 @@ HTTPS URL for authenticated sessions because the production cookie is
 same runtime environment rather than creating an unconfigured second service.
 `settings.json` and `.codex/` remain user-owned and deployment does not replace
 them. Task Scheduler restarts the service after failure or logon.
+
+## Requirement review (`/review`)
+
+Human gate for Veda requirements (REQ-001..018 in `.veda/projects/app-dashboard/requirements.md`).
+
+- Access: signed-in dashboard session, role Admin (`DASHBOARD_USER_ROLES`, default: the configured
+  `VEDA_DASHBOARD_USERNAME` is Admin) and listed in `REVIEW_ALLOWLIST` (default `thedubpalace`).
+  Mutations need the existing `X-CSRF-Token`. 401/403 attempts go to `.runtime/security.log`.
+- Tracker: `REVIEW_TRACKER=mock|github` (default `mock`).
+  - `mock`: cards are parsed from the real `requirements.md` (`REVIEW_MOCK_PROJECTS`, default
+    `app-dashboard`; projects dir from `REVIEW_VEDA_PROJECTS_DIR` or the registry folder). Status,
+    comments, idempotency, gate result and audit live in `.runtime/review-sandbox/` (ignored).
+    `registry.json` is never written; the page shows what reconcile *would* set.
+    Admins get a debug panel to simulate GitHub/token/two-phase/conflict states.
+  - `github`: `GitHubProjectTracker` skeleton only. It fails closed (`token_missing`) until implemented.
+- REQ block format parsed from requirements.md: a line `**REQ-NNN Title**`, bullet lines, and
+  `- AC: (a) ... (b) ...`. The content hash covers the whole block.
+- Token (github mode, not used yet): `REVIEW_GITHUB_TOKEN` in the ignored `.env.runtime`, plus
+  `REVIEW_GITHUB_OWNER`, `REVIEW_GITHUB_PROJECT_NUMBER`, `REVIEW_GITHUB_REPO`. Never commit it; it is
+  never sent to the browser. Rotate: create a new token, replace the value, restart the dashboard,
+  revoke the old token. Scope to confirm when connecting: fine-grained PATs may not reach a
+  user-owned ProjectV2; fallback is a classic PAT with `project` + `repo` (REQ-016).
+- Other settings: `REVIEW_REQUIRED_APPROVALS` (default 1), `REVIEW_RUNTIME_DIR`, `REVIEW_AUDIT_PATH`.
