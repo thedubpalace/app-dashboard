@@ -17,7 +17,12 @@ _*.py
 _*.png
 _*.log
 _uvicorn.*
+# ...but never package markers (routers/__init__.py was silently untracked)
+!__init__.py
 
 
 # host agent secret
 .agent-token
+
+# runtime state (audit/security logs, review sandbox, pid files)
+.runtime/
