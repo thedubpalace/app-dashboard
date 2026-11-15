@@ -9,7 +9,8 @@ Run with the dashboard's Python from the dashboard folder, e.g.
     .venv\\Scripts\\python.exe scripts\\review_sync.py sync --project app-dashboard --dry-run
 
 Settings come from the dashboard's `.env.runtime` (`--env-file`): REVIEW_GITHUB_OWNER,
-REVIEW_GITHUB_OWNER_TYPE, REVIEW_GITHUB_PROJECT_NUMBER, REVIEW_GITHUB_REPO, VEDA_REGISTRY.
+REVIEW_GITHUB_OWNER_TYPE, REVIEW_GITHUB_PROJECT_NUMBER, REVIEW_GITHUB_REPO, REVIEW_GITHUB_APP_FIELD,
+REVIEW_PROJECTS_DIR, VEDA_REGISTRY.
 The token (`REVIEW_GITHUB_TOKEN`) is read from that file only and never printed.
 `index` and `allocate` work offline; the others need the token.
 The sync never sets Approved or Changes requested.
@@ -55,13 +56,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-file", default=str(ROOT / ".env.runtime"))
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     sub = parser.add_subparsers(dest="command", required=True)
-    p_index = sub.add_parser("index", help="record local REQ blocks in .veda/requirements-index.json (offline)")
+    p_index = sub.add_parser("index", help="record local REQ blocks in the requirements index (offline)")
     p_index.add_argument("--project", required=True)
     p_alloc = sub.add_parser("allocate", help="issue new REQ ids (offline, locked)")
     p_alloc.add_argument("--project", required=True)
     p_alloc.add_argument("--count", type=int, default=1)
     sub.add_parser("check", help="verify token, repo, project and fields")
-    p_boot = sub.add_parser("bootstrap", help="check + create missing REQ-ID / Veda Project text fields")
+    p_boot = sub.add_parser("bootstrap", help="check + create missing REQ-ID / App text fields (REVIEW_GITHUB_APP_FIELD)")
     p_boot.add_argument("--dry-run", action="store_true")
     p_sync = sub.add_parser("sync", help="one-way sync requirements.md -> issues/cards")
     p_sync.add_argument("--project", required=True)

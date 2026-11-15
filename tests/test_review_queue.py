@@ -259,7 +259,7 @@ class ApproveTests(ReviewApiTestCase):
         self.assertEqual(self.tracker().get("REQ-101").status, APPROVED)
         comments = self.tracker().get("REQ-101").comments
         self.assertEqual([c.kind for c in comments], ["approved"])
-        self.assertIn("Approved by @thedubpalace via Veda Dashboard", comments[0].body)
+        self.assertIn("Approved by @thedubpalace via App Dashboard", comments[0].body)
         # Same key (double tap) and a second tab (new key) both succeed without a second approval.
         status, again, _, _ = self.decide("approve", "REQ-101", card, cookie, csrf, "approve_once_0000001")
         self.assertEqual(status, 200); self.assertTrue(again["replayed"])
@@ -513,7 +513,7 @@ class FakeTracker(RequirementTracker):
         self.card = Card(req_id=item.req_id, project="demo", title=item.title, content_markdown=item.content_markdown,
                          acceptance_criteria=item.acceptance_criteria, scope_in=[], scope_out=[], scope_source="none",
                          content_hash=item.content_hash, section_hashes={}, status=NEEDS_REVIEW, requested_at="2026-11-14T00:00:00Z",
-                         issue_number=7, issue_url="https://github.com/thedubpalace/veda-requirements/issues/7", issue_is_mock=False)
+                         issue_number=7, issue_url="https://github.com/thedubpalace/requirements/issues/7", issue_is_mock=False)
         self.calls: list[str] = []
 
     def health(self):

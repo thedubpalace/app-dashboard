@@ -168,13 +168,13 @@ Run `python -m unittest discover -s tests -v`.
 
 ## Requirement review (`/review`)
 
-Human gate for Veda requirements (REQ-001..018 in `.veda/projects/app-dashboard/requirements.md`).
+Human gate for requirements (REQ-001..018 in `.veda/projects/app-dashboard/requirements.md`).
 
 - Access: signed-in dashboard session, role Admin and listed in `REVIEW_ALLOWLIST` (default `thedubpalace`).
   Mutations need the `X-CSRF-Token`. 401/403 attempts go to `.runtime/security.log`.
 - Tracker: `REVIEW_TRACKER=mock|github` (default `mock`).
   - `mock`: cards are parsed from the real `requirements.md` (`REVIEW_MOCK_PROJECTS`, default
-    `app-dashboard`; projects dir from `REVIEW_VEDA_PROJECTS_DIR` or the registry folder). Status,
+    `app-dashboard`; projects dir from `REVIEW_PROJECTS_DIR` (old name `REVIEW_VEDA_PROJECTS_DIR` still read) or the registry folder). Status,
     comments, idempotency, gate result and audit live in `.runtime/review-sandbox/` (ignored).
     `registry.json` is never written; the page shows what reconcile *would* set and a banner that
     the data is simulated. Admins get a debug panel to simulate GitHub/token/two-phase/conflict states.
@@ -230,15 +230,16 @@ REVIEW_GITHUB_TOKEN=ghp_...            # classic PAT, scopes: project, repo
 REVIEW_GITHUB_OWNER=thedubpalace
 REVIEW_GITHUB_OWNER_TYPE=user          # or organization
 REVIEW_GITHUB_PROJECT_NUMBER=<n>       # from https://github.com/users/<owner>/projects/<n>
-REVIEW_GITHUB_REPO=thedubpalace/veda-requirements
+REVIEW_GITHUB_REPO=thedubpalace/requirements
+REVIEW_GITHUB_APP_FIELD=App              # optional; name of the text field holding the app name
 ```
 
-1. On GitHub: create the private repo `veda-requirements` and a user Project "Veda Requirements".
+1. On GitHub: create the private repo `requirements` and a user Project "Requirements".
    Edit its built-in **Status** field to exactly four options: `Draft`, `Needs review`, `Approved`,
    `Changes requested` (other values are ignored by `/review`).
 2. `.venv\Scripts\python.exe scripts\review_sync.py check` - token, scopes, repo, project, fields.
 3. `... scripts\review_sync.py bootstrap --dry-run`, then without `--dry-run`: creates the text
-   fields `REQ-ID` and `Veda Project` when missing and lists anything left to fix by hand.
+   fields `REQ-ID` and `App` (or `REVIEW_GITHUB_APP_FIELD`) when missing and lists anything left to fix by hand.
 4. `... scripts\review_sync.py sync --project <name> --dry-run`, then without `--dry-run`: creates
    one issue `REQ-NNN: <title>` per block, adds it to the project with Status `Needs review`, and
    records the mapping in `.veda/requirements-index.json`. Re-running is idempotent. The sync can only

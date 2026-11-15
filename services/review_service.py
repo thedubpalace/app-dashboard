@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 from services import registry_writer
 from services.file_lock import LockTimeout
-from services.github_projects import API_URL, GitHubConfig, GitHubProjectTracker
+from services.github_projects import API_URL, DEFAULT_APP_FIELD, GitHubConfig, GitHubProjectTracker
 from services.review_markdown import render_inline, render_markdown
 from services.review_tracker import (
     APPROVED, CHANGES_REQUESTED, NEEDS_REVIEW, Card, MockTracker,
@@ -69,7 +69,8 @@ class ReviewConfig:
         if mode not in {"mock", "github"}:
             mode = "mock"
         runtime_dir = Path(os.getenv("REVIEW_RUNTIME_DIR", str(BASE_DIR / ".runtime" / ("review-sandbox" if mode == "mock" else "review"))))
-        projects_dir = Path(os.getenv("REVIEW_VEDA_PROJECTS_DIR", str(registry_path.parent)))
+        # REVIEW_VEDA_PROJECTS_DIR is the pre-rename name, still read as a fallback.
+        projects_dir = Path(os.getenv("REVIEW_PROJECTS_DIR") or os.getenv("REVIEW_VEDA_PROJECTS_DIR") or str(registry_path.parent))
         default_audit = runtime_dir / "audit" / "requirement-reviews.jsonl" if mode == "mock" else projects_dir.parent / "audit" / "requirement-reviews.jsonl"
         try:
             required = max(1, int(os.getenv("REVIEW_REQUIRED_APPROVALS", "1")))
@@ -83,11 +84,12 @@ class ReviewConfig:
             owner=os.getenv("REVIEW_GITHUB_OWNER", "thedubpalace").strip(),
             owner_type=owner_type if owner_type in ("user", "organization") else "user",
             project_number=int(number) if number.isdigit() else None,
-            repo=os.getenv("REVIEW_GITHUB_REPO", "thedubpalace/veda-requirements").strip(),
+            repo=os.getenv("REVIEW_GITHUB_REPO", "thedubpalace/requirements").strip(),
             env_file=env_file,
             api_url=os.getenv("REVIEW_GITHUB_API_URL", API_URL).strip(),
             cache_seconds=_float_env("REVIEW_GITHUB_CACHE_SECONDS", 20.0, 0.0, 60.0),
             expiry_warning_days=int(_float_env("REVIEW_TOKEN_WARNING_DAYS", 14, 1, 90)),
+            app_field=os.getenv("REVIEW_GITHUB_APP_FIELD", "").strip() or DEFAULT_APP_FIELD,
         )
         return cls(
             mode=mode,
@@ -150,7 +152,7 @@ def missing_fields(card: Card) -> list[str]:
     if not card.issue_number:
         missing.append("issue")
     if card.sync_pending:
-        missing.append("การซิงก์กับ GitHub (เนื้อหาใน .veda ต่างจาก issue — รัน scripts/review_sync.py sync)")
+        missing.append("การซิงก์กับ GitHub (เนื้อหาใน requirements.md ต่างจาก issue — รัน scripts/review_sync.py sync)")
     return missing
 
 
@@ -376,7 +378,7 @@ class ReviewService:
             comment_id = None
             warning = None
             try:
-                comment_id = self.tracker.add_comment(req_id, f"Approved by @{actor} via Veda Dashboard (hash {card.content_hash[:7]})",
+                comment_id = self.tracker.add_comment(req_id, f"Approved by @{actor} via App Dashboard (hash {card.content_hash[:7]})",
                                                       actor=actor, kind="approved", content_hash=card.content_hash)
             except TrackerError as exc:
                 warning = "อนุมัติแล้ว แต่โพสต์คอมเมนต์ยืนยันบน issue ไม่สำเร็จ"
@@ -414,7 +416,7 @@ class ReviewService:
                     self._store_intent(key, {"action": "request_changes", "reqId": req_id, "phase": "done", "response": response})
                     return response
                 self._conflict(card, seen_hash, seen_sections)
-                body = (f"Changes requested for {req_id} by @{actor} via Veda Dashboard\n"
+                body = (f"Changes requested for {req_id} by @{actor} via App Dashboard\n"
                         f"Reviewed at: {self.clock()}\nContent hash: {card.content_hash[:12]}\n\nReason:\n{reason}")
                 try:
                     comment_id = self.tracker.add_comment(req_id, body, actor=actor, kind="changes_requested", content_hash=card.content_hash, reason=reason)

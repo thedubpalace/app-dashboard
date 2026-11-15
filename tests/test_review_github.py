@@ -80,7 +80,7 @@ class Env:
         self.audit = self.veda / "audit" / "requirement-reviews.jsonl"
         self.runtime = root / "runtime"
         self.fake = FakeGitHub()
-        self.gh = GitHubConfig(owner="thedubpalace", owner_type="user", project_number=1, repo="thedubpalace/veda-requirements",
+        self.gh = GitHubConfig(owner="thedubpalace", owner_type="user", project_number=1, repo="thedubpalace/requirements",
                                env_file=self.env_file, api_url="https://api.github.invalid/graphql", cache_seconds=0)
 
     def ops(self):
@@ -275,7 +275,7 @@ class ClientAndTokenTests(unittest.TestCase):
             fake.fail["*"] = fail
             client = GraphQLClient(TOKEN, transport=fake)
             with self.assertRaises(TrackerError) as ctx:
-                client.execute("query VedaViewer { viewer { login } }")
+                client.execute("query ReviewViewer { viewer { login } }")
             self.assertEqual(ctx.exception.code, code, fail)
             text = f"{ctx.exception.message} {ctx.exception.details} {ctx.exception!r}"
             self.assertNotIn(TOKEN, text)
@@ -288,7 +288,7 @@ class ClientAndTokenTests(unittest.TestCase):
             from services.github_projects import TransportFailure
             raise TransportFailure(timeout=True)
         with self.assertRaises(TrackerError) as ctx:
-            GraphQLClient(TOKEN, transport=broken).execute("query VedaViewer { viewer { login } }")
+            GraphQLClient(TOKEN, transport=broken).execute("query ReviewViewer { viewer { login } }")
         self.assertEqual((ctx.exception.code, ctx.exception.status), ("github_unavailable", 504))
 
     def test_urllib_transport_against_local_http_server(self):
@@ -315,11 +315,11 @@ class ClientAndTokenTests(unittest.TestCase):
         thread.start()
         try:
             client = GraphQLClient(TOKEN, api_url=f"http://127.0.0.1:{server.server_address[1]}/graphql", transport=urllib_transport)
-            self.assertEqual(client.execute("query VedaViewer { viewer { login } }")["viewer"]["login"], "thedubpalace")
+            self.assertEqual(client.execute("query ReviewViewer { viewer { login } }")["viewer"]["login"], "thedubpalace")
             self.assertEqual(seen["auth"], f"bearer {TOKEN}")
             self.assertEqual(client.last_headers.get("x-oauth-scopes"), "project, repo")
             with self.assertRaises(TrackerError) as ctx:
-                client.execute("query VedaFail { viewer { login } }")
+                client.execute("query ReviewFail { viewer { login } }")
             self.assertEqual(ctx.exception.code, "token_expired")
         finally:
             server.shutdown()
@@ -350,7 +350,7 @@ class TrackerTests(unittest.TestCase):
         card = cards[0]
         self.assertEqual(card.status, NEEDS_REVIEW)
         self.assertFalse(card.issue_is_mock)
-        self.assertTrue(card.issue_url.startswith("https://github.com/thedubpalace/veda-requirements/issues/"))
+        self.assertTrue(card.issue_url.startswith("https://github.com/thedubpalace/requirements/issues/"))
         self.assertEqual(card.acceptance_criteria, ["ข้อแรก", "ข้อสอง"])
         self.assertFalse(card.sync_pending)
 
@@ -433,7 +433,7 @@ class SyncTests(unittest.TestCase):
         issue = fake.issue_for("REQ-101")
         self.assertTrue(issue["title"].startswith("REQ-101: First requirement"))
         self.assertIn("Do not edit here", issue["body"])
-        self.assertEqual(fake.item_for("REQ-101")["fields"]["Veda Project"]["value"], "demo")
+        self.assertEqual(fake.item_for("REQ-101")["fields"]["App"]["value"], "demo")
         entry = requirements_index.load(self.env.index)["requirements"]["REQ-101"]
         self.assertEqual((entry["project"], entry["issueNumber"], entry["active"]), ("demo", issue["number"], True))
         self.assertTrue(entry["itemId"].startswith("PVTI_"))
@@ -463,7 +463,7 @@ class SyncTests(unittest.TestCase):
         report = self.env.syncer().run("demo")
         action = report.actions[0]
         self.assertEqual((action.action, action.status_before, action.status_after), ("update", APPROVED, NEEDS_REVIEW))
-        statuses = [v["value"]["singleSelectOptionId"] for name, v in self.env.fake.calls if name == "VedaSetField" and "singleSelectOptionId" in v["value"]]
+        statuses = [v["value"]["singleSelectOptionId"] for name, v in self.env.fake.calls if name == "ReviewSetField" and "singleSelectOptionId" in v["value"]]
         self.assertEqual(statuses[-2:], ["O_0", "O_1"])  # Draft, then Needs review
         self.assertIn("ข้อสองแก้แล้ว", self.env.fake.issue_for("REQ-101")["body"])
 
@@ -518,11 +518,11 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(len(result["manual"]), 4)
 
     def test_crash_after_issue_creation_reuses_the_issue(self):
-        self.env.fake.fail["VedaAddItem"] = ("http", 502)
+        self.env.fake.fail["ReviewAddItem"] = ("http", 502)
         with self.assertRaises(TrackerError):
             self.env.syncer().run("demo")
         self.assertEqual(len(self.env.fake.issues), 1)
-        del self.env.fake.fail["VedaAddItem"]
+        del self.env.fake.fail["ReviewAddItem"]
         self.env.syncer().run("demo")
         self.assertEqual(len(self.env.fake.issues), 2)
         self.assertEqual(len(self.env.fake.items), 2)
@@ -550,8 +550,8 @@ class GateEndToEndTests(unittest.TestCase):
         start = len(self.env.fake.calls)
         service.request_changes(actor="thedubpalace", role="admin", session_id="sess", req_id="REQ-101", seen_hash=card.content_hash,
                                 seen_sections=None, reason="AC ข้อสองยังวัดผลไม่ได้", key="changes_key_000000001")
-        names = [name for name, _ in self.env.fake.calls[start:] if name in ("VedaComment", "VedaSetField")]
-        self.assertEqual(names, ["VedaComment", "VedaSetField"])
+        names = [name for name, _ in self.env.fake.calls[start:] if name in ("ReviewComment", "ReviewSetField")]
+        self.assertEqual(names, ["ReviewComment", "ReviewSetField"])
         self.assertEqual(self.env.fake.status_of("REQ-101"), CHANGES_REQUESTED)
         comment = self.env.fake.issue_for("REQ-101")["comments"][-1]["body"]
         self.assertIn("REQ-101", comment)
@@ -575,7 +575,7 @@ class GateEndToEndTests(unittest.TestCase):
 
         audit = [json.loads(line) for line in self.env.audit.read_text(encoding="utf-8").splitlines()]
         self.assertEqual([(a["action"], a["result"]) for a in audit], [("request_changes", "succeeded"), ("approve", "succeeded"), ("approve", "succeeded")])
-        self.assertTrue(all(a["issueUrl"].startswith("https://github.com/thedubpalace/veda-requirements/issues/") for a in audit))
+        self.assertTrue(all(a["issueUrl"].startswith("https://github.com/thedubpalace/requirements/issues/") for a in audit))
         self.assertNotIn(TOKEN, self.env.audit.read_text(encoding="utf-8"))
 
         # content changes after approval -> sync -> back to review and not ready (REQ-004 b)
@@ -600,7 +600,7 @@ class GateEndToEndTests(unittest.TestCase):
     def test_github_failure_on_approve_changes_nothing(self):
         service = self.env.service()
         service.queue()
-        self.env.fake.fail["VedaSetField"] = ("http", 502)
+        self.env.fake.fail["ReviewSetField"] = ("http", 502)
         with self.assertRaises(TrackerError):
             approve(service, "REQ-101", "approve_key_000000009")
         self.assertEqual(self.env.fake.status_of("REQ-101"), NEEDS_REVIEW)
@@ -608,7 +608,7 @@ class GateEndToEndTests(unittest.TestCase):
 
     def test_comment_failure_on_request_changes_keeps_status(self):
         service = self.env.service()
-        self.env.fake.fail["VedaComment"] = ("http", 502)
+        self.env.fake.fail["ReviewComment"] = ("http", 502)
         card = service.tracker.get("REQ-101")
         with self.assertRaises(TrackerError):
             service.request_changes(actor="thedubpalace", role="admin", session_id="s", req_id="REQ-101", seen_hash=card.content_hash,
@@ -646,7 +646,7 @@ class GitHubModeApiTests(unittest.TestCase):
         self.env = Env()
         self.env.syncer().run("demo")
         env = {"VEDA_DASHBOARD_SESSION_SECRET": "session-secret", "VEDA_DASHBOARD_USERNAME": "thedubpalace", "VEDA_DASHBOARD_PASSWORD": "pw",
-               "REVIEW_TRACKER": "github", "REVIEW_VEDA_PROJECTS_DIR": str(self.env.projects), "REVIEW_RUNTIME_DIR": str(self.env.runtime),
+               "REVIEW_TRACKER": "github", "REVIEW_PROJECTS_DIR": str(self.env.projects), "REVIEW_RUNTIME_DIR": str(self.env.runtime),
                "REVIEW_ENV_FILE": str(self.env.env_file), "REVIEW_INDEX_PATH": str(self.env.index), "REVIEW_REGISTRY_PATH": str(self.env.registry),
                "REVIEW_AUDIT_PATH": str(self.env.audit), "REVIEW_GITHUB_PROJECT_NUMBER": "1", "REVIEW_GITHUB_CACHE_SECONDS": "0",
                "DASHBOARD_SECURITY_LOG": str(self.env.runtime / "security.log"), "REVIEW_GITHUB_TOKEN": "ghp_processenvmustbeignored"}
@@ -673,7 +673,7 @@ class GitHubModeApiTests(unittest.TestCase):
         self.assertEqual((status, data["mode"], len(data["cards"])), (200, "github", 2), data)
         card = data["cards"][0]
         self.assertFalse(card["issue"]["mock"])
-        self.assertTrue(card["issue"]["url"].startswith("https://github.com/thedubpalace/veda-requirements/issues/"))
+        self.assertTrue(card["issue"]["url"].startswith("https://github.com/thedubpalace/requirements/issues/"))
         self.assertNotIn(TOKEN.encode(), raw)
         status, result, _, raw = self.call("POST", f"/api/review/cards/{card['reqId']}/approve", cookie=cookie,
                                            headers={"x-csrf-token": csrf, "idempotency-key": "approve_api_00000001"},
@@ -698,6 +698,79 @@ class GitHubModeApiTests(unittest.TestCase):
         self.assertEqual(data["code"], "token_expired")
         del self.env.fake.fail["*"]
         self.assertEqual(self.env.fake.status_of("REQ-101"), NEEDS_REVIEW)
+
+
+# ------------------------------------------------------- generic naming ----
+
+class GenericNamingTests(unittest.TestCase):
+    """Nothing sent to GitHub carries the orchestrator's name; the app field name is configurable."""
+
+    def setUp(self):
+        self.env = Env()
+
+    def tearDown(self):
+        self.env.cleanup()
+
+    def test_nothing_sent_to_github_mentions_veda(self):
+        self.env.syncer().run("demo")
+        bootstrap(self.env.ops(), dry_run=True)
+        service = self.env.service()
+        approve(service, "REQ-101", "approve_generic_0001")
+        card = service.tracker.get("REQ-102")
+        service.request_changes(actor="thedubpalace", role="admin", session_id="sess", req_id="REQ-102", seen_hash=card.content_hash,
+                                seen_sections=card.section_hashes, reason="please clarify", key="changes_generic_0001")
+        sent = self.env.fake.requests_seen
+        self.assertTrue(sent)
+        ops = {json.loads(body)["query"].split("(")[0].split("{")[0].split()[1] for body, _ in sent}
+        self.assertTrue(ops and all(name.startswith("Review") for name in ops), ops)
+        for body, headers in sent:
+            self.assertNotIn("veda", body.decode("utf-8").lower())
+            self.assertNotIn("veda", json.dumps(headers).lower())
+            self.assertEqual(headers["User-Agent"], "requirement-review")
+        issue = self.env.fake.issue_for("REQ-101")
+        self.assertIn("**App:** `demo`", issue["body"])
+        self.assertTrue(any("req-review:v1" in c["body"] for c in issue["comments"]))
+
+    def test_app_field_name_is_configurable(self):
+        self.env.fake = FakeGitHub(app_field="Service")
+        self.env.gh.app_field = "Service"
+        self.env.syncer().run("demo")
+        self.assertEqual(self.env.fake.item_for("REQ-101")["fields"]["Service"]["value"], "demo")
+        self.assertNotIn("App", self.env.fake.fields)
+        cards = GitHubProjectTracker(self.env.gh, self.env.projects, self.env.index, transport=self.env.fake).list_pending()
+        self.assertEqual([c.req_id for c in cards], ["REQ-101", "REQ-102"])
+
+    def test_missing_app_field_is_reported_by_its_configured_name(self):
+        self.env.fake = FakeGitHub(app_field="Service")
+        result = bootstrap(self.env.ops(), dry_run=True)  # the default "App" field does not exist on this board
+        self.assertIn("field 'App' (text) [dry-run]", result["created"])
+
+    def test_invalid_app_field_name_is_a_config_problem(self):
+        self.env.gh.app_field = 'App") { x'
+        self.assertIn("REVIEW_GITHUB_APP_FIELD", self.env.gh.problems())
+        with self.assertRaises(TrackerError):
+            self.env.ops()
+
+    def test_legacy_markers_are_still_read(self):
+        from services.github_projects import body_hash, encode_review_marker
+        self.assertEqual(body_hash("x\n<!-- veda-req:REQ-101@abc123 -->\n"), "abc123")
+        self.assertEqual(body_hash("x\n<!-- req-sync:REQ-101@def456 -->\n"), "def456")
+        legacy = encode_review_marker({"a": 1}).replace("req-review:v1", "veda-review:v1")
+        self.assertEqual(decode_review_marker(legacy), {"a": 1})
+
+    def test_env_names_defaults_and_projects_dir_fallback(self):
+        registry = self.env.registry
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("REVIEW_")}
+        with patch.dict(os.environ, clean, clear=True):
+            config = ReviewConfig.from_env(registry)
+            self.assertEqual((config.github.repo, config.github.app_field), ("thedubpalace/requirements", "App"))
+            self.assertEqual(config.projects_dir, registry.parent)
+            os.environ["REVIEW_VEDA_PROJECTS_DIR"] = str(self.env.runtime / "old")
+            self.assertEqual(ReviewConfig.from_env(registry).projects_dir, self.env.runtime / "old")
+            os.environ["REVIEW_PROJECTS_DIR"] = str(self.env.runtime / "new")
+            os.environ["REVIEW_GITHUB_APP_FIELD"] = "Service"
+            config = ReviewConfig.from_env(registry)
+            self.assertEqual((config.projects_dir, config.github.app_field), (self.env.runtime / "new", "Service"))
 
 
 if __name__ == "__main__":

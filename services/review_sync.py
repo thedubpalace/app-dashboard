@@ -7,7 +7,7 @@ other status raises `SyncPermissionError` before anything is sent.
 
 Per REQ block:
 - no card yet           -> create issue `REQ-NNN: <title>`, add it to the project,
-                           set REQ-ID / Veda Project, Status = Needs review
+                           set REQ-ID / App, Status = Needs review
 - content changed       -> overwrite issue title/body; Approved / Changes requested
                            -> Draft -> Needs review; Draft -> Needs review
 - issue edited on GitHub (local content unchanged) -> overwrite + drift log entry
@@ -28,7 +28,7 @@ from typing import Any
 
 from services import requirements_index
 from services.github_projects import (
-    FIELD_PROJECT, FIELD_REQ_ID, SYNC_STATUSES, GitHubProjects, ProjectItem, body_hash, issue_title, render_issue_body,
+    FIELD_REQ_ID, SYNC_STATUSES, GitHubProjects, ProjectItem, body_hash, issue_title, render_issue_body,
 )
 from services.review_parser import ParsedRequirement, parse_file
 from services.review_tracker import APPROVED, CHANGES_REQUESTED, DRAFT, NEEDS_REVIEW, STATUSES
@@ -147,9 +147,9 @@ class Syncer:
         for card in self.ops.items():
             if card.archived or card.repository.lower() != self.ops.repo.lower() or not card.req_id:
                 continue
-            if card.veda_project != project:
+            if card.app != project:
                 if any(item.req_id == card.req_id for item in items):
-                    raise SyncAbort(f"{card.req_id} already has a card for project {card.veda_project!r}")
+                    raise SyncAbort(f"{card.req_id} already has a card for project {card.app!r}")
                 continue
             cards.setdefault(card.req_id, card)
         records: dict[str, dict[str, Any]] = {}
@@ -187,7 +187,7 @@ class Syncer:
                 action.detail = "existing issue re-attached as a card"
             item_id = self.ops.add_item(issue_id)
             self.ops.set_text(item_id, FIELD_REQ_ID, item.req_id)
-            self.ops.set_text(item_id, FIELD_PROJECT, project)
+            self.ops.set_text(item_id, self.ops.app_field, project)
             self._set_status(item_id, NEEDS_REVIEW, dry_run)
             records[item.req_id] = {**base, "issueNodeId": issue_id, "issueNumber": number, "itemId": item_id}
             self._log(project, action, {"issueNumber": number, "to": item.content_hash})
@@ -200,7 +200,7 @@ class Syncer:
         if content_changed:
             kind, detail = "update", f"content changed {(synced or 'none')[:7]} -> {item.content_hash[:7]}"
         elif body_differs:
-            kind, detail = "drift", "issue edited on GitHub; overwritten from .veda"
+            kind, detail = "drift", "issue edited on GitHub; overwritten from requirements.md"
         else:
             kind, detail = "noop", ""
         path: list[str] = []
@@ -232,13 +232,13 @@ def bootstrap(ops: GitHubProjects, *, dry_run: bool) -> dict[str, Any]:
     ops.repository_id()
     meta = ops.meta()
     result["project"] = {"title": meta.title, "url": meta.url}
-    for name in (FIELD_REQ_ID, FIELD_PROJECT):
+    for name in (FIELD_REQ_ID, ops.app_field):
         if name not in meta.fields:
             if not dry_run:
                 ops.create_text_field(name)
             result["created"].append(f"field '{name}' (text)" + (" [dry-run]" if dry_run else ""))
     meta = ops.meta(refresh=not dry_run)
-    planned = {f"field '{FIELD_REQ_ID}'", f"field '{FIELD_PROJECT}'"} if dry_run else set()
+    planned = {f"field '{FIELD_REQ_ID}'", f"field '{ops.app_field}'"} if dry_run else set()
     # Status options are edited in the GitHub UI (see README); they are reported, not created.
     result["manual"] = [problem for problem in meta.missing() if problem not in planned]
     result["ok"] = not result["manual"]

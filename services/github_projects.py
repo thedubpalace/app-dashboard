@@ -12,7 +12,7 @@ never put in an error message or a response.
 Token type (checked 2026-11-15 against docs.github.com): fine-grained PATs
 cannot access Projects owned by a *user* account (listed under
 "fine-grained personal access tokens limitations"; account permissions have
-no Projects entry). For the user-owned "Veda Requirements" project use a
+no Projects entry). For a user-owned "Requirements" project use a
 classic PAT with scopes `project` + `repo` (private central repo), or move
 the Project to an organization and use a fine-grained PAT / GitHub App.
 """
@@ -43,10 +43,12 @@ API_URL = "https://api.github.com/graphql"
 TOKEN_KEY = "REVIEW_GITHUB_TOKEN"
 FIELD_STATUS = "Status"
 FIELD_REQ_ID = "REQ-ID"
-FIELD_PROJECT = "Veda Project"
+DEFAULT_APP_FIELD = "App"  # text field naming the app a card belongs to (REVIEW_GITHUB_APP_FIELD)
+FIELD_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$")
 REQ_ID = re.compile(r"^REQ-\d{3,}$")
-MARKER_BODY = re.compile(r"<!--\s*veda-req:(\S+)\s*-->")
-MARKER_REVIEW = re.compile(r"<!--\s*veda-review:v1\s+([A-Za-z0-9_=-]+)\s*-->")
+# `veda-req:` / `veda-review:v1` are the pre-rename markers, still accepted when reading.
+MARKER_BODY = re.compile(r"<!--\s*(?:req-sync|veda-req):(\S+)\s*-->")
+MARKER_REVIEW = re.compile(r"<!--\s*(?:req-review|veda-review):v1\s+([A-Za-z0-9_=-]+)\s*-->")
 SYNC_STATUSES = (DRAFT, NEEDS_REVIEW)
 
 
@@ -137,7 +139,7 @@ class GraphQLClient:
 
     def execute(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
         headers = {"Authorization": f"bearer {self._token}", "Accept": "application/vnd.github+json",
-                   "Content-Type": "application/json", "User-Agent": "veda-dashboard-review"}
+                   "Content-Type": "application/json", "User-Agent": "requirement-review"}
         payload = json.dumps({"query": query, "variables": variables or {}}).encode("utf-8")
         try:
             status, response_headers, raw = self.transport(self.api_url, payload, headers, self.timeout)
@@ -199,7 +201,7 @@ def _missing_scopes(headers: dict[str, str]) -> list[str]:
 
 def encode_review_marker(payload: dict[str, Any]) -> str:
     raw = base64.urlsafe_b64encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).decode("ascii")
-    return f"<!-- veda-review:v1 {raw} -->"
+    return f"<!-- req-review:v1 {raw} -->"
 
 
 def decode_review_marker(body: str) -> dict[str, Any] | None:
@@ -214,7 +216,7 @@ def decode_review_marker(body: str) -> dict[str, Any] | None:
 
 
 def body_hash(body: str | None) -> str | None:
-    """Content hash recorded by the sync in the issue body marker (`veda-req:REQ-001@<sha256>`)."""
+    """Content hash recorded by the sync in the issue body marker (`req-sync:REQ-001@<sha256>`)."""
     match = MARKER_BODY.search(body or "")
     if not match or "@" not in match.group(1):
         return None
@@ -223,11 +225,11 @@ def body_hash(body: str | None) -> str | None:
 
 def render_issue_body(item: ParsedRequirement) -> str:
     return (
-        f"> Synced from `.veda/projects/{item.project}/requirements.md` by Veda. "
+        f"> Synced from `{item.project}/requirements.md` by the requirement sync. "
         "Do not edit here: changes are overwritten by the next sync and logged as drift.\n\n"
-        f"**Veda project:** `{item.project}`  \n**Content hash:** `{item.content_hash[:12]}`\n\n"
+        f"**App:** `{item.project}`  \n**Content hash:** `{item.content_hash[:12]}`\n\n"
         f"{item.raw_block.strip()}\n\n"
-        f"<!-- veda-req:{item.req_id}@{item.content_hash} -->\n"
+        f"<!-- req-sync:{item.req_id}@{item.content_hash} -->\n"
     )
 
 
@@ -243,6 +245,7 @@ class ProjectMeta:
     title: str
     url: str | None
     fields: dict[str, dict[str, Any]]  # name -> {id, dataType, options{name: id}}
+    app_field: str = DEFAULT_APP_FIELD
 
     def missing(self) -> list[str]:
         problems = []
@@ -253,7 +256,7 @@ class ProjectMeta:
             for name in STATUSES:
                 if name not in status["options"]:
                     problems.append(f"Status option '{name}'")
-        for name in (FIELD_REQ_ID, FIELD_PROJECT):
+        for name in (FIELD_REQ_ID, self.app_field):
             if name not in self.fields:
                 problems.append(f"field '{name}'")
         return problems
@@ -265,7 +268,7 @@ class ProjectItem:
     status: str | None
     status_updated_at: str | None
     req_id: str | None
-    veda_project: str | None
+    app: str | None
     issue_id: str
     issue_number: int
     issue_url: str
@@ -285,9 +288,13 @@ _FIELD_VALUE = """
 class GitHubProjects:
     """GraphQL operations for one ProjectV2 + one central repository."""
 
-    def __init__(self, client: GraphQLClient, *, owner: str, owner_type: str, project_number: int, repo: str):
+    def __init__(self, client: GraphQLClient, *, owner: str, owner_type: str, project_number: int, repo: str,
+                 app_field: str = DEFAULT_APP_FIELD):
         if owner_type not in ("user", "organization"):
             raise ValueError("owner_type must be user or organization")
+        if not FIELD_NAME.match(app_field or ""):
+            raise ValueError("invalid app field name")
+        self.app_field = app_field
         self.client = client
         self.owner = owner
         self.owner_type = owner_type
@@ -301,7 +308,7 @@ class GitHubProjects:
         return f"owner: {self.owner_type}(login: $login)"
 
     def viewer(self) -> dict[str, Any]:
-        data = self.client.execute("query VedaViewer { viewer { login } rateLimit { remaining resetAt } }")
+        data = self.client.execute("query ReviewViewer { viewer { login } rateLimit { remaining resetAt } }")
         return {"login": (data.get("viewer") or {}).get("login"), "rateLimit": data.get("rateLimit") or {},
                 "headers": dict(self.client.last_headers)}
 
@@ -310,7 +317,7 @@ class GitHubProjects:
             if self._meta and not refresh:
                 return self._meta
             query = (
-                "query VedaProjectMeta($login: String!, $number: Int!) { " + self._owner() + " { projectV2(number: $number) { id title url "
+                "query ReviewProjectMeta($login: String!, $number: Int!) { " + self._owner() + " { projectV2(number: $number) { id title url "
                 "fields(first: 50) { nodes { __typename "
                 "... on ProjectV2FieldCommon { id name dataType } "
                 "... on ProjectV2SingleSelectField { options { id name } } } } } } }"
@@ -325,7 +332,7 @@ class GitHubProjects:
                     continue
                 fields[node["name"]] = {"id": node.get("id"), "dataType": node.get("dataType"),
                                         "options": {opt["name"]: opt["id"] for opt in node.get("options") or [] if opt}}
-            self._meta = ProjectMeta(project["id"], project.get("title") or "", project.get("url"), fields)
+            self._meta = ProjectMeta(project["id"], project.get("title") or "", project.get("url"), fields, self.app_field)
             return self._meta
 
     def repository_id(self) -> str:
@@ -333,7 +340,7 @@ class GitHubProjects:
             if self._repo_id:
                 return self._repo_id
             owner, name = self.repo.split("/", 1)
-            data = self.client.execute("query VedaRepo($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { id nameWithOwner isPrivate } }",
+            data = self.client.execute("query ReviewRepo($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { id nameWithOwner isPrivate } }",
                                        {"owner": owner, "name": name})
             repo = data.get("repository")
             if not repo:
@@ -343,18 +350,19 @@ class GitHubProjects:
 
     def items(self) -> list[ProjectItem]:
         query = (
-            "query VedaItems($login: String!, $number: Int!, $cursor: String) { " + self._owner() + " { projectV2(number: $number) { "
+            "query ReviewItems($login: String!, $number: Int!, $cursor: String, $appField: String!) { " + self._owner() + " { projectV2(number: $number) { "
             "items(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { id isArchived "
             f"status: fieldValueByName(name: \"{FIELD_STATUS}\") {{ {_FIELD_VALUE} }} "
             f"reqId: fieldValueByName(name: \"{FIELD_REQ_ID}\") {{ {_FIELD_VALUE} }} "
-            f"vedaProject: fieldValueByName(name: \"{FIELD_PROJECT}\") {{ {_FIELD_VALUE} }} "
+            f"app: fieldValueByName(name: $appField) {{ {_FIELD_VALUE} }} "
             "content { __typename ... on Issue { id number url title body repository { nameWithOwner } "
             "comments(last: 50) { nodes { id body createdAt url author { login } } } } } } } } } }"
         )
         result: list[ProjectItem] = []
         cursor = None
         for _ in range(50):  # hard page cap: 5000 items
-            data = self.client.execute(query, {"login": self.owner, "number": self.project_number, "cursor": cursor})
+            data = self.client.execute(query, {"login": self.owner, "number": self.project_number, "cursor": cursor,
+                                                 "appField": self.app_field})
             project = (data.get("owner") or {}).get("projectV2")
             if not project:
                 raise TrackerError("token_scope", "ไม่พบ Project หรือ token เข้าถึงไม่ได้", status=503)
@@ -365,13 +373,13 @@ class GitHubProjects:
                     continue  # draft items / PRs are not requirement cards (REQ-001 b)
                 status = node.get("status") or {}
                 req = node.get("reqId") or {}
-                project_value = node.get("vedaProject") or {}
+                app_value = node.get("app") or {}
                 result.append(ProjectItem(
                     item_id=node["id"],
                     status=status.get("name"),
                     status_updated_at=status.get("updatedAt"),
                     req_id=(req.get("text") or req.get("name") or "").strip() or None,
-                    veda_project=(project_value.get("text") or project_value.get("name") or "").strip() or None,
+                    app=(app_value.get("text") or app_value.get("name") or "").strip() or None,
                     issue_id=content["id"],
                     issue_number=int(content["number"]),
                     issue_url=str(content.get("url") or ""),
@@ -394,7 +402,7 @@ class GitHubProjects:
         if not field_meta:
             raise TrackerError("not_configured", f"Project ไม่มี field '{field_name}'", status=503)
         self.client.execute(
-            "mutation VedaSetField($project: ID!, $item: ID!, $field: ID!, $value: ProjectV2FieldValue!) { "
+            "mutation ReviewSetField($project: ID!, $item: ID!, $field: ID!, $value: ProjectV2FieldValue!) { "
             "updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field, value: $value}) { projectV2Item { id } } }",
             {"project": meta.project_id, "item": item_id, "field": field_meta["id"], "value": value})
 
@@ -413,7 +421,7 @@ class GitHubProjects:
 
     def add_comment(self, subject_id: str, body: str) -> str:
         data = self.client.execute(
-            "mutation VedaComment($subject: ID!, $body: String!) { addComment(input: {subjectId: $subject, body: $body}) { commentEdge { node { id url } } } }",
+            "mutation ReviewComment($subject: ID!, $body: String!) { addComment(input: {subjectId: $subject, body: $body}) { commentEdge { node { id url } } } }",
             {"subject": subject_id, "body": body})
         node = (((data.get("addComment") or {}).get("commentEdge") or {}).get("node") or {})
         if not node.get("id"):
@@ -422,7 +430,7 @@ class GitHubProjects:
 
     def create_issue(self, title: str, body: str) -> dict[str, Any]:
         data = self.client.execute(
-            "mutation VedaCreateIssue($repo: ID!, $title: String!, $body: String!) { createIssue(input: {repositoryId: $repo, title: $title, body: $body}) { issue { id number url } } }",
+            "mutation ReviewCreateIssue($repo: ID!, $title: String!, $body: String!) { createIssue(input: {repositoryId: $repo, title: $title, body: $body}) { issue { id number url } } }",
             {"repo": self.repository_id(), "title": title, "body": body})
         issue = (data.get("createIssue") or {}).get("issue")
         if not issue:
@@ -431,12 +439,12 @@ class GitHubProjects:
 
     def update_issue(self, issue_id: str, title: str, body: str) -> None:
         self.client.execute(
-            "mutation VedaUpdateIssue($id: ID!, $title: String!, $body: String!) { updateIssue(input: {id: $id, title: $title, body: $body}) { issue { id } } }",
+            "mutation ReviewUpdateIssue($id: ID!, $title: String!, $body: String!) { updateIssue(input: {id: $id, title: $title, body: $body}) { issue { id } } }",
             {"id": issue_id, "title": title, "body": body})
 
     def add_item(self, content_id: str) -> str:
         data = self.client.execute(
-            "mutation VedaAddItem($project: ID!, $content: ID!) { addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } } }",
+            "mutation ReviewAddItem($project: ID!, $content: ID!) { addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } } }",
             {"project": self.meta().project_id, "content": content_id})
         item = (data.get("addProjectV2ItemById") or {}).get("item")
         if not item:
@@ -445,7 +453,7 @@ class GitHubProjects:
 
     def create_text_field(self, name: str) -> str:
         data = self.client.execute(
-            "mutation VedaCreateField($project: ID!, $name: String!) { createProjectV2Field(input: {projectId: $project, dataType: TEXT, name: $name}) { "
+            "mutation ReviewCreateField($project: ID!, $name: String!) { createProjectV2Field(input: {projectId: $project, dataType: TEXT, name: $name}) { "
             "projectV2Field { ... on ProjectV2FieldCommon { id name } } } }",
             {"project": self.meta().project_id, "name": name})
         created = (data.get("createProjectV2Field") or {}).get("projectV2Field") or {}
@@ -466,6 +474,7 @@ class GitHubConfig:
     cache_seconds: float = 20.0
     expiry_warning_days: int = 14
     timeout: float = 15.0
+    app_field: str = DEFAULT_APP_FIELD
 
     def problems(self) -> list[str]:
         problems = []
@@ -475,6 +484,8 @@ class GitHubConfig:
             problems.append("REVIEW_GITHUB_REPO")
         if not re.fullmatch(r"[A-Za-z0-9-]+", self.owner or ""):
             problems.append("REVIEW_GITHUB_OWNER")
+        if not FIELD_NAME.match(self.app_field or ""):
+            problems.append("REVIEW_GITHUB_APP_FIELD")
         return problems
 
 
@@ -490,7 +501,8 @@ def build_projects(config: GitHubConfig, *, transport: Transport | None = None) 
         raise TrackerError("token_scope", "fine-grained PAT เข้าถึง Project ของ user account ไม่ได้ — ใช้ classic PAT scope project + repo",
                            details={"missingScopes": ["classic PAT: project, repo"]})
     client = GraphQLClient(token, api_url=config.api_url, timeout=config.timeout, transport=transport)
-    return GitHubProjects(client, owner=config.owner, owner_type=config.owner_type, project_number=int(config.project_number or 0), repo=config.repo)
+    return GitHubProjects(client, owner=config.owner, owner_type=config.owner_type, project_number=int(config.project_number or 0), repo=config.repo,
+                        app_field=config.app_field)
 
 
 # -------------------------------------------------------------- tracker ----
@@ -500,7 +512,7 @@ def _valid_project_name(name: str | None) -> bool:
 
 
 class GitHubProjectTracker(RequirementTracker):
-    """`RequirementTracker` backed by ProjectV2 "Veda Requirements" + the central issue repo.
+    """`RequirementTracker` backed by ProjectV2 "Requirements" + the central issue repo.
 
     Content comes from `.veda/projects/<name>/requirements.md` (source of
     truth); status and review comments come from GitHub. A card whose local
@@ -625,14 +637,14 @@ class GitHubProjectTracker(RequirementTracker):
                 continue
             if item.status is not None and item.status not in STATUSES:
                 continue  # REQ-001 c: unknown Status values are ignored
-            if not item.req_id or not REQ_ID.match(item.req_id) or not _valid_project_name(item.veda_project):
+            if not item.req_id or not REQ_ID.match(item.req_id) or not _valid_project_name(item.app):
                 continue
             entry = index.get(item.req_id) or {}
-            if entry and (entry.get("active") is False or entry.get("project") != item.veda_project):
+            if entry and (entry.get("active") is False or entry.get("project") != item.app):
                 continue  # withdrawn, or the card claims a project that does not own this id
             if item.req_id in by_req:
                 continue  # duplicate card for one REQ-id: first wins
-            project = str(item.veda_project)
+            project = str(item.app)
             if project not in locals_by_project:
                 locals_by_project[project] = self._local(project)
             local = locals_by_project[project].get(item.req_id)
