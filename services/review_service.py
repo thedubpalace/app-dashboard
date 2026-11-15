@@ -2,7 +2,9 @@
 
 Talks to a `RequirementTracker` only (REQ-017). In mock mode the gate result
 is written to the sandbox and reported as "would set"; registry.json is never
-touched (REQ-012 is simulated until the GitHub adapter is connected).
+touched. In github mode the reconcile writes only `requirementsReady` and
+`requirementsApproval` of the reviewed project, through the targeted,
+locked registry writer (REQ-012).
 """
 from __future__ import annotations
 
@@ -15,9 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from services import registry_writer
+from services.file_lock import LockTimeout
+from services.github_projects import API_URL, GitHubConfig, GitHubProjectTracker
 from services.review_markdown import render_inline, render_markdown
 from services.review_tracker import (
-    APPROVED, CHANGES_REQUESTED, NEEDS_REVIEW, Card, GitHubProjectTracker, MockTracker,
+    APPROVED, CHANGES_REQUESTED, NEEDS_REVIEW, Card, MockTracker,
     RequirementTracker, TrackerError, write_json_atomic,
 )
 
@@ -52,6 +57,11 @@ class ReviewConfig:
     audit_path: Path
     projects_dir: Path
     mock_projects: list[str]
+    registry_path: Path | None = None
+    index_path: Path | None = None
+    env_file: Path | None = None
+    registry_write: bool = False
+    github: GitHubConfig | None = None
 
     @classmethod
     def from_env(cls, registry_path: Path) -> "ReviewConfig":
@@ -65,6 +75,20 @@ class ReviewConfig:
             required = max(1, int(os.getenv("REVIEW_REQUIRED_APPROVALS", "1")))
         except ValueError:
             required = 1
+        index_path = Path(os.getenv("REVIEW_INDEX_PATH", str(projects_dir.parent / "requirements-index.json")))
+        env_file = Path(os.getenv("REVIEW_ENV_FILE", str(BASE_DIR / ".env.runtime")))
+        number = os.getenv("REVIEW_GITHUB_PROJECT_NUMBER", "").strip()
+        owner_type = os.getenv("REVIEW_GITHUB_OWNER_TYPE", "user").strip().lower()
+        github = GitHubConfig(
+            owner=os.getenv("REVIEW_GITHUB_OWNER", "thedubpalace").strip(),
+            owner_type=owner_type if owner_type in ("user", "organization") else "user",
+            project_number=int(number) if number.isdigit() else None,
+            repo=os.getenv("REVIEW_GITHUB_REPO", "thedubpalace/veda-requirements").strip(),
+            env_file=env_file,
+            api_url=os.getenv("REVIEW_GITHUB_API_URL", API_URL).strip(),
+            cache_seconds=_float_env("REVIEW_GITHUB_CACHE_SECONDS", 20.0, 0.0, 60.0),
+            expiry_warning_days=int(_float_env("REVIEW_TOKEN_WARNING_DAYS", 14, 1, 90)),
+        )
         return cls(
             mode=mode,
             allowlist=[name.lower() for name in _csv("REVIEW_ALLOWLIST", "thedubpalace")],
@@ -73,18 +97,25 @@ class ReviewConfig:
             audit_path=Path(os.getenv("REVIEW_AUDIT_PATH", str(default_audit))),
             projects_dir=projects_dir,
             mock_projects=_csv("REVIEW_MOCK_PROJECTS", "app-dashboard"),
+            registry_path=Path(os.getenv("REVIEW_REGISTRY_PATH") or str(registry_path)),
+            index_path=index_path,
+            env_file=env_file,
+            registry_write=mode == "github" and os.getenv("REVIEW_REGISTRY_WRITE", "1").strip() != "0",
+            github=github,
         )
 
 
-def build_tracker(config: ReviewConfig) -> RequirementTracker:
+def _float_env(name: str, default: float, low: float, high: float) -> float:
+    try:
+        return min(high, max(low, float(os.getenv(name, str(default)))))
+    except ValueError:
+        return default
+
+
+def build_tracker(config: ReviewConfig, *, transport: Any = None) -> RequirementTracker:
     if config.mode == "github":
-        project_number = os.getenv("REVIEW_GITHUB_PROJECT_NUMBER")
-        return GitHubProjectTracker(
-            token=os.getenv("REVIEW_GITHUB_TOKEN") or None,
-            owner=os.getenv("REVIEW_GITHUB_OWNER", "thedubpalace"),
-            project_number=int(project_number) if project_number and project_number.isdigit() else None,
-            repo=os.getenv("REVIEW_GITHUB_REPO", "thedubpalace/veda-requirements"),
-        )
+        assert config.github and config.index_path
+        return GitHubProjectTracker(config.github, config.projects_dir, config.index_path, transport=transport)
     return MockTracker(config.projects_dir, config.runtime_dir, config.mock_projects)
 
 
@@ -118,6 +149,8 @@ def missing_fields(card: Card) -> list[str]:
         missing.append("Acceptance criteria")
     if not card.issue_number:
         missing.append("issue")
+    if card.sync_pending:
+        missing.append("การซิงก์กับ GitHub (เนื้อหาใน .veda ต่างจาก issue — รัน scripts/review_sync.py sync)")
     return missing
 
 
@@ -229,7 +262,9 @@ class ReviewService:
     # ---------- gate (REQ-012) ----------
     def reconcile(self, project: str, *, cards: list[Card] | None = None, actor: str = "system") -> dict[str, Any]:
         cards = cards if cards is not None else self.tracker.list_cards(project)
-        ready = bool(cards) and all(card.status == APPROVED for card in cards)
+        cards = sorted(cards, key=lambda card: card.req_id)
+        required = self.config.required_approvals
+        ready = bool(cards) and all(card.status == APPROVED and len({entry["actor"] for entry in card.approvals}) >= required for card in cards)
         approval = None
         if ready:
             approvals = [entry for card in cards for entry in card.approvals]
@@ -246,9 +281,29 @@ class ReviewService:
                 self._save(data)
             # Registry is never written in mock mode.
             return {**result, "applied": False, "target": "sandbox", "message": f"จะตั้ง requirementsReady={'true' if ready else 'false'} ให้ {project} (โหมดจำลอง — ยังไม่เขียน registry)"}
-        # TODO(github mode): write only requirementsReady + requirementsApproval in registry.json
-        # atomically with a lock (targeted edit, never rewrite other fields), then report.
-        return {**result, "applied": False, "target": "none", "message": "ยังไม่ได้เชื่อม registry writer สำหรับโหมด GitHub"}
+        return self._write_registry(project, result, actor)
+
+    def _write_registry(self, project: str, result: dict[str, Any], actor: str) -> dict[str, Any]:
+        """Targeted, locked, idempotent write of the derived flag (REQ-012). Never raises for registry trouble."""
+        path = self.config.registry_path
+        if not self.config.registry_write or not path:
+            return {**result, "applied": False, "target": "disabled", "message": "registry writer ปิดอยู่ (REVIEW_REGISTRY_WRITE=0)"}
+        updates = {"requirementsReady": result["requirementsReady"], "requirementsApproval": result["requirementsApproval"]}
+        try:
+            if registry_writer.read_project(path, project) is None:
+                return {**result, "applied": False, "target": "registry", "message": f"ไม่พบโปรเจกต์ {project} ใน registry — ไม่ได้เขียน"}
+            changed = registry_writer.update_project_fields(path, project, updates)
+        except (registry_writer.RegistryWriteError, LockTimeout, OSError, ValueError) as exc:
+            # The decision is already recorded in GitHub; the next reconcile repairs the flag.
+            return {**result, "applied": False, "target": "registry", "error": exc.__class__.__name__,
+                    "message": "บันทึกการตัดสินแล้ว แต่เขียน registry ไม่สำเร็จ — จะซ่อมเองเมื่อเปิดหน้ารีวิวครั้งถัดไป"}
+        with self._lock:
+            data = self._load()
+            data["gate"][project] = {**result, "at": self.clock(), "by": actor, "changed": changed}
+            self._save(data)
+        state = "true" if result["requirementsReady"] else "false"
+        return {**result, "applied": True, "changed": changed, "target": "registry",
+                "message": f"requirementsReady={state} ({project}){'' if changed else ' — ไม่มีการเปลี่ยนแปลง'}"}
 
     # ---------- decisions ----------
     def _intent(self, key: str, action: str, req_id: str) -> dict[str, Any] | None:

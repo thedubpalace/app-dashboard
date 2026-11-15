@@ -59,6 +59,24 @@ class StartServiceTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('install requirements.txt', result.stderr)
 
+    def test_review_github_token_is_not_exported_to_the_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = Path(directory) / self.script
+            shutil.copyfile(Path(__file__).resolve().parents[1] / self.script, launcher)
+            (launcher.parent / '.env.runtime').write_text('REVIEW_GITHUB_TOKEN=ghp_secretvalue' + chr(10) + 'GITHUB_TOKEN=ghp_other' + chr(10) + 'REVIEW_TRACKER=github' + chr(10), encoding='utf-8')
+            environment = os.environ.copy()
+            for name in ('REVIEW_GITHUB_TOKEN', 'GITHUB_TOKEN', 'REVIEW_TRACKER', 'APP_DASHBOARD_PORT', 'APP_AGENT_PORT'):
+                environment.pop(name, None)
+            command = ("function Invoke-WebRequest { throw 'No server listening' }; "
+                       "function python { if ($args[0] -eq '-c') { $global:LASTEXITCODE = 0; return }; "
+                       "ConvertTo-Json -Compress -InputObject @([string]$env:REVIEW_GITHUB_TOKEN, [string]$env:GITHUB_TOKEN, [string]$env:REVIEW_TRACKER); $global:LASTEXITCODE = 0 }; & '"
+                       + str(launcher).replace("'", "''") + "'")
+            result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
+                                    env=environment, capture_output=True, text=True, timeout=15,
+                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ['', '', 'github'])
+
     def test_running_dashboard_does_not_start_a_second_server(self):
         result = self.launch(already_running=True)
         self.assertEqual(result.returncode, 0, result.stderr)

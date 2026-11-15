@@ -108,6 +108,9 @@ class ReviewApiTestCase(unittest.TestCase):
             "REVIEW_RUNTIME_DIR": str(self.runtime),
             "REVIEW_MOCK_PROJECTS": "demo",
             "DASHBOARD_SECURITY_LOG": str(self.security_log),
+            "REVIEW_ENV_FILE": str(root / "env.runtime"),
+            "REVIEW_INDEX_PATH": str(root / "requirements-index.json"),
+            "REVIEW_REGISTRY_PATH": str(root / "registry.json"),
         }
         for name in ("DASHBOARD_USER_ROLES", "REVIEW_ALLOWLIST", "REVIEW_AUDIT_PATH", "REVIEW_GITHUB_TOKEN", "REVIEW_REQUIRED_APPROVALS"):
             self.env.setdefault(name, "")
@@ -472,7 +475,10 @@ class TokenAndModeTests(ReviewApiTestCase):
 
     def test_token_never_reaches_responses_html_or_js(self):
         os.environ["REVIEW_TRACKER"] = "github"
-        os.environ["REVIEW_GITHUB_TOKEN"] = SECRET_TOKEN
+        os.environ["REVIEW_GITHUB_TOKEN"] = SECRET_TOKEN  # must be ignored: the token is read from the env file only
+        Path(os.environ["REVIEW_ENV_FILE"]).write_text(f"REVIEW_GITHUB_TOKEN={SECRET_TOKEN}\n", encoding="utf-8")
+        os.environ["REVIEW_GITHUB_PROJECT_NUMBER"] = "1"
+        os.environ["REVIEW_GITHUB_API_URL"] = "http://127.0.0.1:9/graphql"  # closed port: no real network
         cookie, csrf = self.login()
         bodies = [call("GET", path, cookie=cookie)[3] for path in ("/api/review/queue", "/api/review/summary", "/review", "/static/review.js", "/static/review-model.js", "/")]
         bodies.append(call("POST", "/api/review/cards/REQ-101/approve", cookie=cookie, headers={"x-csrf-token": csrf, "idempotency-key": "approve_token_000001"}, body={"hash": "x"})[3])
@@ -550,7 +556,7 @@ class TrackerBoundaryTests(unittest.TestCase):
         pattern = re.compile(r"updateProjectV2ItemFieldValue|addComment\(|projectV2|graphql", re.IGNORECASE)
         offenders = []
         for path in [Path("main.py"), *Path("services").glob("*.py"), *Path("static").glob("*.js"), *Path("templates").glob("*.html")]:
-            if path.name != "review_tracker.py" and pattern.search(path.read_text(encoding="utf-8")):
+            if path.name != "github_projects.py" and pattern.search(path.read_text(encoding="utf-8")):
                 offenders.append(str(path))
         self.assertEqual(offenders, [])
 

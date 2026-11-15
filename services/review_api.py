@@ -29,10 +29,19 @@ router = APIRouter()
 _services: dict[tuple[Any, ...], ReviewService] = {}
 
 
+def _mtime(path: Path | None) -> float | None:
+    """The token is read from the env file; a changed file (token rotation) rebuilds the tracker."""
+    try:
+        return path.stat().st_mtime if path else None
+    except OSError:
+        return None
+
+
 def get_service() -> ReviewService:
     config = ReviewConfig.from_env(Path(app_registry.REGISTRY_PATH))
     key = (config.mode, str(config.runtime_dir), str(config.audit_path), str(config.projects_dir), tuple(config.mock_projects),
-           tuple(config.allowlist), config.required_approvals, os.getenv("REVIEW_GITHUB_TOKEN") is not None)
+           tuple(config.allowlist), config.required_approvals, str(config.index_path), str(config.registry_path),
+           config.registry_write, repr(config.github), _mtime(config.env_file))
     service = _services.get(key)
     if service is None:
         service = ReviewService(config, build_tracker(config))

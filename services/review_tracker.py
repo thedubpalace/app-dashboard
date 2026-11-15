@@ -2,14 +2,14 @@
 
 Review logic (queue, transitions, gate, audit) talks to `RequirementTracker`
 only. REQ-id is the primary key everywhere; tracker-specific ids (issue
-number, ProjectV2 item id) stay inside an adapter.
+number, project item id) stay inside an adapter.
 
 Implementations:
 - `MockTracker`: reads real REQ blocks from `.veda/projects/<name>/requirements.md`
   but keeps status and comments in a sandbox JSON file under the dashboard's
   ignored `.runtime/` directory. It never touches registry.json.
-- `GitHubProjectTracker`: skeleton for the ProjectV2 + central-repo adapter.
-  Not connected yet (no repo, Project or token exists).
+- `GitHubProjectTracker` (services/github_projects.py): GitHub Projects + central-repo
+  adapter; all GitHub API code lives there.
 
 Select with env `REVIEW_TRACKER=mock|github` (default mock).
 """
@@ -37,7 +37,7 @@ REVIEWER_STATUSES = (APPROVED, CHANGES_REQUESTED)
 # Error codes shared with the UI (design R14.4).
 ERROR_CODES = (
     "github_unavailable", "rate_limited", "token_missing", "token_expired", "token_scope",
-    "session_expired", "forbidden", "conflict_hash", "conflict_state", "network_unknown",
+    "session_expired", "forbidden", "conflict_hash", "conflict_state", "network_unknown", "not_configured",
 )
 
 
@@ -85,6 +85,7 @@ class Card:
     group: str | None = None
     comments: list[ReviewComment] = field(default_factory=list)
     approvals: list[dict[str, str]] = field(default_factory=list)
+    sync_pending: bool = False  # local content differs from what the sync last wrote to the issue
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -346,62 +347,9 @@ class MockTracker(RequirementTracker):
             return comment.id
 
 
-class GitHubProjectTracker(RequirementTracker):
-    """ProjectV2 "Veda Requirements" + central issue repo adapter (REQ-001, REQ-016).
-
-    All GitHub GraphQL lives here. Not connected yet: the central repo, the
-    Project and the token do not exist. Every call fails closed with a
-    sanitized `TrackerError`, so the review page shows the token/setup state
-    and never enables Approve.
-
-    TODO (when the user has created the repo/Project and a token):
-    - token from env `REVIEW_GITHUB_TOKEN` (loaded from ignored `.env.runtime`);
-      never log, echo or send it to the browser. Confirm whether a fine-grained
-      PAT can reach a *user-owned* ProjectV2; if not, classic PAT `project`+`repo`
-      or move the Project to an org (REQ-016: report, do not choose silently).
-    - health(): `viewer { login }` + response header `github-authentication-token-expiration`
-      for expiry warnings; map 401 -> token_expired, missing scope -> token_scope,
-      `x-ratelimit-reset` -> rate_limited.retry_at.
-    - list_cards(): `user(login) { projectV2(number) { items(first:100) { nodes {
-      id fieldValues { ...ProjectV2ItemFieldSingleSelectValue / TextValue }
-      content { ... on Issue { number url body updatedAt comments } } } } } }`
-      filtered by Status / REQ-ID / Veda Project fields; page through `pageInfo`.
-    - get(): re-fetch a single item (no cache; queue cache <= 60s, REQ-006).
-    - set_status(): `updateProjectV2ItemFieldValue` with the Status option id;
-      refuse any status not in REVIEWER_STATUSES when called from the review path.
-    - add_comment(): `addComment(input:{subjectId: <issue node id>, body})` -> comment id.
-    - REQ-id -> issue number / item id mapping in `.veda/requirements-index.json`.
-    - validate issue/PR URLs are https://github.com/<central repo>/... only.
-    """
-
-    mode = "github"
-
-    def __init__(self, token: str | None, owner: str, project_number: int | None, repo: str):
-        self._token = token
-        self.owner = owner
-        self.project_number = project_number
-        self.repo = repo
-
-    def _require_token(self) -> None:
-        if not self._token:
-            raise TrackerError("token_missing", "ยังไม่ได้ตั้งค่า GitHub token")
-        raise TrackerError("github_unavailable", "ยังไม่ได้เชื่อม GitHub Project adapter (ยังไม่ implement)")
-
-    def health(self) -> TrackerHealth:
-        self._require_token()
-        return TrackerHealth()
-
-    def list_cards(self, project: str | None = None) -> list[Card]:
-        self._require_token()
-        return []
-
-    def get(self, req_id: str) -> Card | None:
-        self._require_token()
-        return None
-
-    def set_status(self, req_id: str, status: str, *, actor: str, content_hash: str) -> None:
-        self._require_token()
-
-    def add_comment(self, req_id: str, text: str, *, actor: str, kind: str, content_hash: str, reason: str | None = None) -> str:
-        self._require_token()
-        return ""
+def __getattr__(name: str):
+    # Backwards-compatible import location; the adapter lives in services/github_projects.py.
+    if name == "GitHubProjectTracker":
+        from services.github_projects import GitHubProjectTracker
+        return GitHubProjectTracker
+    raise AttributeError(name)

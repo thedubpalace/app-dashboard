@@ -8,6 +8,9 @@ if (Test-Path -LiteralPath $runtimeEnv -PathType Leaf) {
     if ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
       $envName = $Matches[1]
       $envValue = $Matches[2].Trim()
+      # The review GitHub token is read from this file by the dashboard itself; keep it out of the
+      # process environment so launched consoles (Claude/Codex/shell) never inherit it.
+      if ($envName -in @('REVIEW_GITHUB_TOKEN', 'GITHUB_TOKEN')) { return }
       if ($envValue.Length -ge 2 -and (($envValue.StartsWith('"') -and $envValue.EndsWith('"')) -or ($envValue.StartsWith("'") -and $envValue.EndsWith("'")))) {
         $envValue = $envValue.Substring(1, $envValue.Length - 2)
       }

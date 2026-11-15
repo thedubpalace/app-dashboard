@@ -178,8 +178,76 @@ Human gate for Veda requirements (REQ-001..018 in `.veda/projects/app-dashboard/
     comments, idempotency, gate result and audit live in `.runtime/review-sandbox/` (ignored).
     `registry.json` is never written; the page shows what reconcile *would* set and a banner that
     the data is simulated. Admins get a debug panel to simulate GitHub/token/two-phase/conflict states.
-  - `github`: `GitHubProjectTracker` skeleton only. It fails closed (`token_missing`) until implemented.
-- Token (github mode, not used yet): `REVIEW_GITHUB_TOKEN` in the ignored `.env.runtime`, plus
-  `REVIEW_GITHUB_OWNER`, `REVIEW_GITHUB_PROJECT_NUMBER`, `REVIEW_GITHUB_REPO`. Never commit it; it is
-  never sent to the browser.
-- Other settings: `REVIEW_REQUIRED_APPROVALS` (default 1), `REVIEW_RUNTIME_DIR`, `REVIEW_AUDIT_PATH`.
+  - `github`: `services/github_projects.py` (the only module with GitHub API code). Cards are
+    the issues on the ProjectV2 board; content is always rendered from the local `requirements.md`
+    (source of truth), status and decision comments come from GitHub. A card whose local content
+    differs from the issue body (sync not run yet) cannot be approved; an Approved card whose
+    content changed counts as Draft. The queue is cached for at most `REVIEW_GITHUB_CACHE_SECONDS`
+    (default 20, max 60); every decision re-fetches.
+- Gate (github mode): after every decision and on every queue open, the reconcile writes only
+  `requirementsReady` and `requirementsApproval` of each project that has cards, through a targeted,
+  locked, idempotent edit of `registry.json` (`services/registry_writer.py`; no other byte changes).
+  Projects without cards keep their value (`requirementsApproval: "legacy"` = grandfathered).
+  **Backfilling a legacy project (running sync for it) puts it under the gate: its flag becomes
+  false until every REQ is approved.** `REVIEW_REGISTRY_WRITE=0` disables the write. Committing
+  `registry.json` into the veda repo stays a separate, manual step.
+- Audit: github mode appends to `.veda/audit/requirement-reviews.jsonl`; the sync logs to
+  `.veda/audit/requirement-sync.jsonl` (creates, updates, drift overwrites, withdrawals).
+
+### GitHub token (REQ-016)
+
+Checked 2026-11-15 on docs.github.com ("Managing your personal access tokens" > fine-grained
+limitations; "Using the API to manage Projects"): **fine-grained PATs cannot access Projects owned
+by a user account** (account permissions have no Projects entry), and the Projects API docs name only
+classic PATs and GitHub App installation tokens. GitHub Apps also cannot act on user-owned projects.
+
+- User-owned project (default `thedubpalace`): **classic PAT with scopes `project` and `repo`**
+  (`repo` is needed because the central repo is private; `public_repo` is enough for a public repo).
+  Set an expiry (e.g. 90 days). The dashboard rejects a `github_pat_...` token in this mode with a
+  clear message instead of failing later.
+- Least-privilege alternative: move the Project and the central repo to a free GitHub organization,
+  set `REVIEW_GITHUB_OWNER=<org>` and `REVIEW_GITHUB_OWNER_TYPE=organization`, and use a fine-grained
+  PAT limited to that repo (Issues: read/write, Metadata: read) with organization permission
+  Projects: read/write.
+- Storage: `REVIEW_GITHUB_TOKEN=...` in the ignored `.env.runtime` **only**. The dashboard and the
+  sync script read it from that file, never from the process environment; `start-service.ps1` and
+  `start-agent.ps1` do not export it, so launched consoles do not inherit it. It is never logged,
+  put in an error, an audit line or a response.
+- Expiry: the `github-authentication-token-expiration` response header drives a warning on `/review`
+  `REVIEW_TOKEN_WARNING_DAYS` (default 14) days before expiry; an expired/revoked token shows the
+  token state and disables every action.
+- Rotate: create the new classic PAT, replace the value in `.env.runtime`, run
+  `scripts/review_sync.py check`, restart the dashboard (`start-service.ps1`), then delete the old
+  token on GitHub.
+
+### Setup (once) and sync
+
+Settings in `.env.runtime`:
+
+```env
+REVIEW_TRACKER=github
+REVIEW_GITHUB_TOKEN=ghp_...            # classic PAT, scopes: project, repo
+REVIEW_GITHUB_OWNER=thedubpalace
+REVIEW_GITHUB_OWNER_TYPE=user          # or organization
+REVIEW_GITHUB_PROJECT_NUMBER=<n>       # from https://github.com/users/<owner>/projects/<n>
+REVIEW_GITHUB_REPO=thedubpalace/veda-requirements
+```
+
+1. On GitHub: create the private repo `veda-requirements` and a user Project "Veda Requirements".
+   Edit its built-in **Status** field to exactly four options: `Draft`, `Needs review`, `Approved`,
+   `Changes requested` (other values are ignored by `/review`).
+2. `.venv\Scripts\python.exe scripts\review_sync.py check` - token, scopes, repo, project, fields.
+3. `... scripts\review_sync.py bootstrap --dry-run`, then without `--dry-run`: creates the text
+   fields `REQ-ID` and `Veda Project` when missing and lists anything left to fix by hand.
+4. `... scripts\review_sync.py sync --project <name> --dry-run`, then without `--dry-run`: creates
+   one issue `REQ-NNN: <title>` per block, adds it to the project with Status `Needs review`, and
+   records the mapping in `.veda/requirements-index.json`. Re-running is idempotent. The sync can only
+   set `Draft` / `Needs review`; it never approves.
+5. Set `REVIEW_TRACKER=github` and restart the dashboard. Until then the default stays `mock`.
+
+Offline helpers: `review_sync.py index --project <name>` (record local REQ blocks in the index) and
+`review_sync.py allocate --project <name> --count N` (issue new global REQ ids under a file lock).
+
+Requirement block format (parsed by `services/review_parser.py`): a line `**REQ-NNN Title**`,
+then bullet lines, with acceptance criteria on a bullet `- AC: (a) ... (b) ...`. The block ends at
+the next REQ line or heading. Ids are global, never reused; commits/PRs reference them (`REQ-042`).
