@@ -554,6 +554,8 @@ class GitHubProjectTracker(RequirementTracker):
                 raise TrackerError("token_scope", "GitHub token สิทธิ์ไม่พอ", details={"missingScopes": missing})
         problems = self.ops().meta().missing()
         if problems:
+            problems = self.ops().meta(refresh=True).missing()  # the owner may have fixed the fields meanwhile
+        if problems:
             raise TrackerError("not_configured", f"Project ยังตั้งไม่ครบ: {', '.join(problems)} — รัน scripts/review_sync.py bootstrap")
         warnings: list[dict[str, Any]] = []
         expires = parse_expiration(headers.get("github-authentication-token-expiration"))
