@@ -531,7 +531,20 @@
     .login-error { margin: 10px 0 2px; padding: 9px 12px; border-radius: 12px; background: rgba(255,69,58,.14); color: #ffd4d1; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
     .review-link { display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: var(--radius-pill); border: 1px solid var(--glass-border); background: var(--glass-fill); color: var(--label-primary); font-size: 12px; font-weight: 600; text-decoration: none; white-space: nowrap; box-shadow: var(--shadow-float); box-sizing: border-box; }
     .review-link:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(10,132,255,0.55), var(--shadow-float); }
-    @media (max-width: 420px) { .review-link { max-width: 120px; overflow: hidden; text-overflow: ellipsis; } }
+    .review-link { gap: 6px; flex-shrink: 0; }
+    .review-link svg { flex-shrink: 0; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,0.4)); }
+    .review-link .review-count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: rgba(10,132,255,0.38); font-size: 11px; line-height: 18px; text-align: center; box-sizing: border-box; }
+    .review-link .review-count:empty { display: none; }
+    /* Header must never push past the viewport: the title gives way first, and on
+       phones the review link collapses to icon + pending count. */
+    header.top { gap: 8px; }
+    header.top h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    @media (max-width: 620px) {
+      .header-actions { gap: 6px; }
+      .review-link { padding: 0 10px; gap: 4px; }
+      .review-link .review-label { display: none; }
+    }
+    @media (max-width: 400px) { header.top h1 { font-size: 17px; } }
   </style>
 </head>
 <body>
@@ -555,7 +568,12 @@
     <header class="top">
       <h1>App Dashboard</h1>
       <div class="header-actions">
-        <a id="reviewLink" class="hidden" href="/review">Requirement review</a>
+        <a id="reviewLink" class="hidden" href="/review" title="Requirement review" aria-label="Requirement review">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2" y="1.5" width="10" height="11" rx="2"/><path d="M4.5 7.2l1.6 1.6 3.4-3.4"/>
+          </svg>
+          <span class="review-label">Requirement review</span><span class="review-count"></span>
+        </a>
         <button id="detailsBtn" class="icon-btn" onclick="toggleDetails()" title="Show details" aria-label="Show details" aria-pressed="false">
           <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
             <path d="M2 3h8M2 6h8M2 9h5"/>
@@ -740,8 +758,11 @@
       try {
         const res = await fetch("/api/review/summary"); if (!res.ok) return;
         const data = await res.json(), link = document.getElementById("reviewLink");
-        link.textContent = typeof data.pending === "number" ? `Requirement review (${data.pending})` : "Requirement review";
-        link.setAttribute("aria-label", typeof data.pending === "number" ? `Requirement review, ${data.pending} pending` : "Requirement review");
+        const hasCount = typeof data.pending === "number";
+        // Zero pending shows the icon alone, which keeps the header roomy on phones.
+        link.querySelector(".review-count").textContent = hasCount && data.pending > 0 ? String(data.pending) : "";
+        link.setAttribute("aria-label", hasCount ? `Requirement review, ${data.pending} pending` : "Requirement review");
+        link.title = hasCount ? `Requirement review (${data.pending} pending)` : "Requirement review";
         link.className = "review-link";
       } catch (_) {}
     }

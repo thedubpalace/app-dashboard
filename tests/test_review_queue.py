@@ -657,8 +657,14 @@ class ParserTests(unittest.TestCase):
 class DashboardNavigationTests(unittest.TestCase):
     def test_dashboard_links_review_page_for_reviewers_only(self):
         source = Path("templates/index.html").read_text(encoding="utf-8")
-        self.assertIn('<a id="reviewLink" class="hidden" href="/review">Requirement review</a>', source)
+        self.assertIn('<a id="reviewLink" class="hidden" href="/review"', source)
+        self.assertIn('<span class="review-label">Requirement review</span><span class="review-count"></span>', source)
         self.assertIn('fetch("/api/review/summary")', source)
+
+    def test_review_link_collapses_on_phones(self):
+        source = Path("templates/index.html").read_text(encoding="utf-8")
+        self.assertRegex(source, r"@media \(max-width: 620px\) \{[^}]*\}\s*\.review-link \{[^}]*\}\s*\.review-link \.review-label \{ display: none; \}")
+        self.assertIn("header.top h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }", source)
 
 
 if __name__ == "__main__":
